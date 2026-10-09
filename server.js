@@ -163,7 +163,6 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     
     const r = room(name);
-    // Agar private room (starts with p-) ka pehla user hai to usko owner banao
     if (name.startsWith('p-') && !r.ownerIp) {
       r.ownerIp = ip;
     }
@@ -171,7 +170,6 @@ http.createServer((req, res) => {
     res.write(`data: ${JSON.stringify({ history: r.history, yourId: res.clientId, isOwner: (ip === r.ownerIp) })}\n\n`);
     r.clients.add(res);
 
-    // Live list sync broadcast
     broadcast(name, { system: true, type: 'join', text: `${nick} joined`, count: r.clients.size, users: getUserList(name) });
     
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -181,7 +179,7 @@ http.createServer((req, res) => {
       conns.set(ip, Math.max(0, (conns.get(ip) || 1) - 1));
       
       if (r.clients.size === 0 && name.startsWith('p-')) {
-        r.ownerIp = null; // reset owner if empty
+        r.ownerIp = null;
       }
       
       broadcast(name, { system: true, type: 'leave', text: `${nick} left`, count: r.clients.size, users: getUserList(name) });
@@ -207,7 +205,7 @@ http.createServer((req, res) => {
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
         res.writeHead(204); res.end();
-      } catch { res.writeHead(400); res.end(); }
+      } catch (err) { res.writeHead(400); res.end(); }
     });
   }
 
@@ -215,3 +213,5 @@ http.createServer((req, res) => {
   if (url.pathname === '/typing' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase();
+        const nick = clean(m.nick, 20);
