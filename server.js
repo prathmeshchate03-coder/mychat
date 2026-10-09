@@ -2,7 +2,7 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const rooms = new Map(), hits = new Map(), conns = new Map();
-const BAD = [];   // add words to filter, e.g. ['word1', 'word2']
+const BAD = ['Madharchod', 'Behenchod', 'bkl', 'Mc'];   // add words to filter, e.g. ['word1', 'word2']
 const PAGES = { '/': 'index.html', '/chat': 'chat.html', '/legal': 'legal.html', '/style.css': 'style.css', '/logo.svg': 'logo.svg' };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.svg': 'image/svg+xml' };
 const okRoom = s => /^[a-z0-9-]{1,30}$/.test(s);
