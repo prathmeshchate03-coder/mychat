@@ -1,0 +1,44 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>JenChat - Chat rooms</title><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"></head><body>
+<div id="gate"><a class="brand" href="/" style="justify-content:center"><img src="/logo.svg" alt="">Jen<span>Chat</span></a>
+<p>Free guest chat. No sign-up.</p><input type="text" id="nick" maxlength="20" placeholder="Pick a nickname" aria-label="Nickname"><br><br>
+<label><input type="checkbox" id="age"> I am 18 or older and will be respectful</label><br><br>
+<button id="go">Enter chat</button><p style="color:var(--mut);font-size:13px">Never share personal information with strangers.</p></div>
+<div id="app" hidden><aside id="side"><a class="brand" href="/" style="font-size:18px"><img src="/logo.svg" alt="" style="width:28px;height:28px">Jen<span>Chat</span></a>
+<input type="text" id="q" placeholder="Search rooms" aria-label="Search rooms"><div id="list"></div>
+<b>Topics</b><div class="chips" id="chips"></div>
+<input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
+<button id="priv" class="ghost">Create private room</button></aside>
+<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><span id="cnt" style="color:var(--mut)"></span></div>
+<div id="msgs" aria-live="polite"></div>
+<div id="form"><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<script>
+const $=id=>document.getElementById(id);let nick=localStorage.nick,room,es;
+const slug=s=>s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30);
+$('nick').value=nick||'Guest'+Math.floor(Math.random()*9000+1000);
+['music','gaming','anime','movies','news','english','food','friends'].forEach(t=>{const b=document.createElement('button');b.textContent=t;b.onclick=()=>join(t);$('chips').append(b)});
+function start(){$('gate').hidden=true;$('app').hidden=false;join(location.hash.slice(1)||'lobby');loadRooms();setInterval(loadRooms,5000)}
+$('go').onclick=()=>{if(!$('age').checked)return alert('Please confirm you are 18 or older');
+ nick=$('nick').value.trim().slice(0,20)||'Guest';localStorage.nick=nick;start()};
+function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';$('cnt').textContent='';
+ if(es)es.close();es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick));
+ es.onmessage=e=>{const d=JSON.parse(e.data);if(d.history){$('msgs').innerHTML='';d.history.forEach(add)}else add(d)};
+ $('side').classList.remove('open')}
+function add(m){const box=$('msgs'),el=document.createElement('div');
+ if(m.system){el.className='sys';el.textContent=m.text;$('cnt').textContent=' - '+m.count+' online'}
+ else{el.className='m'+(m.nick===nick?' me':'');const b=document.createElement('b');b.textContent=m.nick;
+  const rp=document.createElement('a');rp.textContent='report';rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id,nick:m.nick,text:m.text})});rp.textContent='reported'};
+  const t=document.createElement('div');t.textContent=m.text;el.append(b,rp,t)}
+ box.append(el);box.scrollTop=box.scrollHeight}
+function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,text:t})}).then(r=>{if(r.status==429){const d=document.createElement('div');d.className='sys';d.textContent='Slow down a little';$('msgs').append(d)}})}
+$('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
+$('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
+$('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6));join('p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join(''));prompt('Share this link to invite people:',location.href)};
+$('menu').onclick=()=>$('side').classList.toggle('open');
+$('q').oninput=loadRooms;
+async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';
+ if(!l.length){$('list').textContent='No active rooms yet. Start one.';return}
+ l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
+if(nick&&location.hash.length>1)$('gate').querySelector('p').textContent='Welcome back. Confirm to continue.';
+</script></body></html>
