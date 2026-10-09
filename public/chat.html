@@ -23,15 +23,17 @@ $('go').onclick=()=>{if(!$('age').checked)return alert('Please confirm you are 1
 function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';$('cnt').textContent='';
  if(es)es.close();es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick));
  es.onmessage=e=>{const d=JSON.parse(e.data);if(d.history){$('msgs').innerHTML='';d.history.forEach(add)}else add(d)};
+ es.onerror=()=>{if(es.readyState===2)notice('Cannot join this room. You may be banned, the room may be closed, or you have too many tabs open.')};
  $('side').classList.remove('open')}
+function notice(t){const d=document.createElement('div');d.className='sys';d.textContent=t;$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
 function add(m){const box=$('msgs'),el=document.createElement('div');
- if(m.system){el.className='sys';el.textContent=m.text;$('cnt').textContent=' - '+m.count+' online'}
+ if(m.system){el.className='sys';el.textContent=m.text;if(m.count!==undefined)$('cnt').textContent=' - '+m.count+' online'}
  else{el.className='m'+(m.nick===nick?' me':'');const b=document.createElement('b');b.textContent=m.nick;
   const rp=document.createElement('a');rp.textContent='report';rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id,nick:m.nick,text:m.text})});rp.textContent='reported'};
   const t=document.createElement('div');t.textContent=m.text;el.append(b,rp,t)}
  box.append(el);box.scrollTop=box.scrollHeight}
 function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';
- fetch('/send',{method:'POST',body:JSON.stringify({room,nick,text:t})}).then(r=>{if(r.status==429){const d=document.createElement('div');d.className='sys';d.textContent='Slow down a little';$('msgs').append(d)}})}
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned or room closed).')})}
 $('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
 $('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
 $('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6));join('p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join(''));prompt('Share this link to invite people:',location.href)};
