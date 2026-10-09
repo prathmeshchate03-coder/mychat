@@ -1,256 +1,46 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>JenChat - Room</title>
-  <link rel="stylesheet" href="/style.css">
-  <style>
-    /* Naye features ke liye custom styling */
-    .chat-container { display: flex; height: 80vh; max-width: 1000px; margin: 20px auto; border: 1px solid #ccc; border-radius: 8px; overflow: hidden; }
-    .users-sidebar { width: 250px; background: #f4f4f9; border-right: 1px solid #ccc; display: flex; flex-direction: column; padding: 15px; }
-    .main-chat { flex: 1; display: flex; flex-direction: column; background: #fff; padding: 15px; }
-    .user-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; margin-bottom: 5px; background: #fff; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-size: 14px; }
-    .btn-action { background: none; border: none; cursor: pointer; font-size: 14px; margin-left: 5px; padding: 2px 5px; border-radius: 3px; }
-    .btn-action:hover { background: #ddd; }
-    #messages { flex: 1; overflow-y: auto; border: 1px solid #eee; padding: 10px; margin-bottom: 10px; border-radius: 4px; }
-    .typing-box { height: 20px; color: #777; font-size: 13px; font-style: italic; margin-bottom: 5px; }
-    .input-row { display: flex; gap: 10px; align-items: center; position: relative; }
-    #msg-input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; }
-    .emoji-btn { font-size: 20px; background: none; border: none; cursor: pointer; padding: 5px; }
-    .emoji-panel { display: none; position: absolute; bottom: 50px; right: 80px; background: white; border: 1px solid #ccc; padding: 10px; border-radius: 8px; grid-template-columns: repeat(5, 1fr); gap: 5px; box-shadow: 0 4px 10px rgba(0,0,0,0.15); z-index: 10; }
-    .emoji-panel span { cursor: pointer; font-size: 20px; padding: 5px; text-align: center; }
-    .emoji-panel span:hover { background: #f0f0f0; border-radius: 4px; }
-    .muted-msg { color: #ccc; font-style: italic; font-size: 12px; }
-    .owner-tag { color: #d9381e; font-weight: bold; font-size: 11px; border: 1px solid #d9381e; padding: 1px 4px; border-radius: 3px; margin-left: 5px; }
-  </style>
-</head>
-<body>
-
-  <header style="text-align: center; padding: 10px; background: #f4f4f9;">
-    <h2>Room: <span id="room-title">...</span> (<span id="user-count">0</span> online)</h2>
-    <a href="/" style="text-decoration: none; color: #555; font-size: 14px;">← Back to Home</a>
-  </header>
-
-  <div class="chat-container">
-    <!-- LEFT SIDEBAR: Online Users -->
-    <div class="users-sidebar">
-      <h3>Online Users</h3>
-      <div id="users-list" style="overflow-y: auto; flex: 1;">
-        <!-- Users dynamic list entries -->
-      </div>
-    </div>
-
-    <!-- MAIN CHAT AREA -->
-    <div class="main-chat">
-      <div id="messages"></div>
-      
-      <!-- Live Typing Status -->
-      <div id="typing-status" class="typing-box"></div>
-
-      <!-- Input controls -->
-      <div class="input-row">
-        <input type="text" id="msg-input" placeholder="Type a message..." autocomplete="off">
-        
-        <!-- Emoji Wrapper Toggle -->
-        <button class="emoji-btn" id="emoji-toggle" title="Insert Emoji">😊</button>
-        <div class="emoji-panel" id="emoji-box">
-          <span>😀</span><span>😂</span><span>😍</span><span>👍</span><span>🔥</span>
-          <span>🎉</span><span>❤️</span><span>🙏</span><span>🤔</span><span>👏</span>
-        </div>
-
-        <button id="send-btn" style="padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">Send</button>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room') || 'global';
-    const nick = params.get('nick') || 'Guest' + Math.floor(Math.random() * 1000);
-    
-    document.getElementById('room-title').innerText = room;
-
-    let myId = "";
-    let amIOwner = false;
-    let typingTimeout;
-    const mutedUsers = new Set(); // Local database to track muted nicknames
-
-    // Connect to SSE stream
-    const es = new EventSource(`/events?room=${encodeURIComponent(room)}&nick=${encodeURIComponent(nick)}`);
-
-    es.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-
-      // Handle raw system data sync events
-      if (data.system) {
-        if (data.type === 'join' || data.type === 'leave') {
-          if (data.yourId) myId = data.yourId;
-          if (data.isOwner !== undefined) amIOwner = data.isOwner;
-          
-          document.getElementById('user-count').innerText = data.count;
-          updateUsersList(data.users);
-          appendSystemMsg(data.text);
-        } else if (data.type === 'typing') {
-          handleTypingEvent(data);
-        } else if (data.type === 'kick') {
-          alert(data.text);
-          window.location.href = "/";
-        }
-        return;
-      }
-
-      // Normal chat logs message logic (Check filter for muted users)
-      if (mutedUsers.has(data.nick)) return;
-      appendMessage(data);
-    };
-
-    es.onerror = () => {
-      appendSystemMsg("Connection lost. Try reloading.");
-    };
-
-    // Update Sidebar UI List
-    function updateUsersList(users) {
-      const container = document.getElementById('users-list');
-      container.innerHTML = "";
-      if (!users) return;
-
-      users.forEach(u => {
-        const item = document.createElement('div');
-        item.className = "user-item";
-        
-        let labelText = u.nick;
-        if (u.id === myId) labelText += " (You)";
-        
-        const textSpan = document.createElement('span');
-        textSpan.innerText = labelText;
-        if (u.isOwner) {
-          const ownerTag = document.createElement('span');
-          ownerTag.className = "owner-tag";
-          ownerTag.innerText = "Owner";
-          textSpan.appendChild(ownerTag);
-        }
-        item.appendChild(textSpan);
-
-        const actionsWrapper = document.createElement('div');
-
-        // Local Block/Mute handler control
-        if (u.id !== myId) {
-          const muteBtn = document.createElement('button');
-          muteBtn.className = "btn-action";
-          muteBtn.innerText = mutedUsers.has(u.nick) ? "🔇" : "🔊";
-          muteBtn.title = mutedUsers.has(u.nick) ? "Unmute User" : "Mute User";
-          muteBtn.onclick = () => {
-            if (mutedUsers.has(u.nick)) {
-              mutedUsers.delete(u.nick);
-            } else {
-              mutedUsers.add(u.nick);
-            }
-            updateUsersList(users);
-          };
-          actionsWrapper.appendChild(muteBtn);
-        }
-
-        // Room Creator Kick Option
-        if (amIOwner && u.id !== myId && room.startsWith('p-')) {
-          const kickBtn = document.createElement('button');
-          kickBtn.className = "btn-action";
-          kickBtn.innerText = "❌";
-          kickBtn.title = "Kick from room";
-          kickBtn.onclick = () => {
-            if (confirm(`Kick ${u.nick} from room?`)) {
-              fetch('/kick', {
-                method: 'POST',
-                body: JSON.stringify({ room, targetId: u.id })
-              });
-            }
-          };
-          actionsWrapper.appendChild(kickBtn);
-        }
-
-        item.appendChild(actionsWrapper);
-        container.appendChild(item);
-      });
-    }
-
-    function appendMessage(msg) {
-      const box = document.getElementById('messages');
-      const div = document.createElement('div');
-      div.style.marginBottom = "8px";
-      div.innerHTML = `<strong>${escapeHtml(msg.nick)}:</strong> ${escapeHtml(msg.text)}`;
-      box.appendChild(div);
-      box.scrollTop = box.scrollHeight;
-    }
-
-    function appendSystemMsg(text) {
-      const box = document.getElementById('messages');
-      const div = document.createElement('div');
-      div.style.color = "orange";
-      div.style.fontSize = "13px";
-      div.style.marginBottom = "8px";
-      div.innerText = `⚠️ ${text}`;
-      box.appendChild(div);
-      box.scrollTop = box.scrollHeight;
-    }
-
-    // Typing logic triggers
-    const input = document.getElementById('msg-input');
-    input.addEventListener('input', () => {
-      sendTypingStatus(true);
-      clearTimeout(typingTimeout);
-      typingTimeout = setTimeout(() => sendTypingStatus(false), 2000);
-    });
-
-    function sendTypingStatus(isTyping) {
-      fetch('/typing', {
-        method: 'POST',
-        body: JSON.stringify({ room, nick, isTyping })
-      }).catch(()=>{});
-    }
-
-    const typingsMap = new Map();
-    function handleTypingEvent(data) {
-      if (data.nick === nick) return; 
-      if (data.isTyping) typingsMap.set(data.nick, true);
-      else typingsMap.delete(data.nick);
-
-      const statusBox = document.getElementById('typing-status');
-      const typers = Array.from(typingsMap.keys());
-      if (typers.length > 0) {
-        statusBox.innerText = `${typers.join(', ')} ${typers.length > 1 ? 'are' : 'is'} typing...`;
-      } else {
-        statusBox.innerText = "";
-      }
-    }
-
-    // Send click function
-    function doSend() {
-      const text = input.value.trim();
-      if (!text) return;
-      input.value = "";
-      sendTypingStatus(false);
-
-      fetch('/send', {
-        method: 'POST',
-        body: JSON.stringify({ room, nick, text })
-      });
-    }
-
-    document.getElementById('send-btn').addEventListener('click', doSend);
-    input.addEventListener('keydown', (e) => { if(e.key === 'Enter') doSend(); });
-
-    // Emoji panel actions
-    const toggle = document.getElementById('emoji-toggle');
-    const panel = document.getElementById('emoji-box');
-    toggle.addEventListener('click', () => {
-      panel.style.display = panel.style.display === 'grid' ? 'none' : 'grid';
-    });
-
-    panel.querySelectorAll('span').forEach(emoji => {
-      emoji.addEventListener('click', () => {
-        input.value += emoji.innerText;
-        panel.style.display = 'none';
-        input.focus();
-      });
-    });
-
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>JenChat - Chat rooms</title><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"></head><body>
+<div id="gate"><a class="brand" href="/" style="justify-content:center"><img src="/logo.svg" alt="">Jen<span>Chat</span></a>
+<p>Free guest chat. No sign-up.</p><input type="text" id="nick" maxlength="20" placeholder="Pick a nickname" aria-label="Nickname"><br><br>
+<label><input type="checkbox" id="age"> I am 18 or older and will be respectful</label><br><br>
+<button id="go">Enter chat</button><p style="color:var(--mut);font-size:13px">Never share personal information with strangers.</p></div>
+<div id="app" hidden><aside id="side"><a class="brand" href="/" style="font-size:18px"><img src="/logo.svg" alt="" style="width:28px;height:28px">Jen<span>Chat</span></a>
+<input type="text" id="q" placeholder="Search rooms" aria-label="Search rooms"><div id="list"></div>
+<b>Topics</b><div class="chips" id="chips"></div>
+<input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
+<button id="priv" class="ghost">Create private room</button></aside>
+<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><span id="cnt" style="color:var(--mut)"></span></div>
+<div id="msgs" aria-live="polite"></div>
+<div id="form"><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<script>
+const $=id=>document.getElementById(id);let nick=localStorage.nick,room,es;
+const slug=s=>s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30);
+$('nick').value=nick||'Guest'+Math.floor(Math.random()*9000+1000);
+['music','gaming','anime','movies','news','english','food','friends'].forEach(t=>{const b=document.createElement('button');b.textContent=t;b.onclick=()=>join(t);$('chips').append(b)});
+function start(){$('gate').hidden=true;$('app').hidden=false;join(location.hash.slice(1)||'lobby');loadRooms();setInterval(loadRooms,5000)}
+$('go').onclick=()=>{if(!$('age').checked)return alert('Please confirm you are 18 or older');
+ nick=$('nick').value.trim().slice(0,20)||'Guest';localStorage.nick=nick;start()};
+function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';$('cnt').textContent='';
+ if(es)es.close();es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick));
+ es.onmessage=e=>{const d=JSON.parse(e.data);if(d.history){$('msgs').innerHTML='';d.history.forEach(add)}else add(d)};
+ es.onerror=()=>{if(es.readyState===2)notice('Cannot join this room. You may be banned, the room may be closed, or you have too many tabs open.')};
+ $('side').classList.remove('open')}
+function notice(t){const d=document.createElement('div');d.className='sys';d.textContent=t;$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
+function add(m){const box=$('msgs'),el=document.createElement('div');
+ if(m.system){el.className='sys';el.textContent=m.text;if(m.count!==undefined)$('cnt').textContent=' - '+m.count+' online'}
+ else{el.className='m'+(m.nick===nick?' me':'');const b=document.createElement('b');b.textContent=m.nick;
+  const rp=document.createElement('a');rp.textContent='report';rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id,nick:m.nick,text:m.text})});rp.textContent='reported'};
+  const t=document.createElement('div');t.textContent=m.text;el.append(b,rp,t)}
+ box.append(el);box.scrollTop=box.scrollHeight}
+function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned or room closed).')})}
+$('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
+$('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
+$('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6));join('p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join(''));prompt('Share this link to invite people:',location.href)};
+$('menu').onclick=()=>$('side').classList.toggle('open');
+$('q').oninput=loadRooms;
+async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';
+ if(!l.length){$('list').textContent='No active rooms yet. Start one.';return}
+ l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
+if(nick&&location.hash.length>1)$('gate').querySelector('p').textContent='Welcome back. Confirm to continue.';
+</script></body></html>
