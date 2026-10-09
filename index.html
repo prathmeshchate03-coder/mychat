@@ -1,0 +1,50 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MyChat - Free Guest Chat Rooms</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#16161a;color:#eee;height:100vh;display:flex}
+button,input{font:inherit}button{background:#ffd60a;border:0;border-radius:8px;padding:9px 14px;cursor:pointer;font-weight:600}
+input[type=text]{background:#26262c;border:1px solid #3a3a42;color:#eee;border-radius:8px;padding:10px;width:100%}
+#login{margin:auto;max-width:360px;padding:24px;text-align:center}#login h1{color:#ffd60a}
+#app{display:none;width:100%}#side{width:240px;background:#1d1d22;padding:12px;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.room{padding:8px;border-radius:6px;cursor:pointer;background:#26262c;display:flex;justify-content:space-between}.room:hover{background:#34343c}
+#main{flex:1;display:flex;flex-direction:column;min-width:0}#head{padding:12px;border-bottom:1px solid #2c2c34;display:flex;gap:8px;align-items:center}
+#msgs{flex:1;overflow:auto;padding:12px;display:flex;flex-direction:column;gap:6px}
+.m{background:#26262c;padding:8px 10px;border-radius:8px;max-width:80%;word-wrap:break-word}.m.me{background:#4a4100;align-self:flex-end}
+.m b{color:#ffd60a;font-size:13px}.m a{color:#888;font-size:11px;cursor:pointer;margin-left:6px}.sys{color:#888;font-size:12px;text-align:center}
+#form{display:flex;gap:8px;padding:12px;border-top:1px solid #2c2c34}
+@media(max-width:700px){#side{display:none}}
+</style></head><body>
+<div id="login"><h1>MyChat</h1><p>Free guest chat rooms. No sign-up.</p>
+<input type="text" id="nick" maxlength="20" placeholder="Pick a nickname"><br><br>
+<label><input type="checkbox" id="age"> I am 18 or older and agree to be respectful</label><br><br>
+<button id="go">Enter chat</button><p style="color:#888;font-size:12px">Never share personal info with strangers.</p></div>
+<div id="app"><div id="side"><b>Rooms</b><div id="list"></div>
+<input type="text" id="newroom" placeholder="Join/create room"><button id="joinbtn">Join</button>
+<button id="priv">Create private room</button></div>
+<div id="main"><div id="head"><b id="rname"></b><span id="cnt" style="color:#888"></span></div>
+<div id="msgs"></div><div id="form"><input type="text" id="text" maxlength="500" placeholder="Type a message..." autocomplete="off"><button id="send">Send</button></div></div></div>
+<script>
+const $=id=>document.getElementById(id);let nick,room,es;
+$('nick').value=localStorage.nick||'Guest'+Math.floor(Math.random()*9000+1000);
+$('go').onclick=()=>{if(!$('age').checked)return alert('Please confirm you are 18+');
+ nick=$('nick').value.trim().slice(0,20)||'Guest';localStorage.nick=nick;
+ $('login').style.display='none';$('app').style.display='flex';join((location.hash.slice(1)||'lobby'));loadRooms();setInterval(loadRooms,5000)};
+function slug(s){return s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-|-$/g,'').slice(0,30)}
+function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';
+ if(es)es.close();es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick));
+ es.onmessage=e=>{const d=JSON.parse(e.data);if(d.history)d.history.forEach(add);else add(d)}}
+function add(m){const box=$('msgs'),el=document.createElement('div');
+ if(m.system){el.className='sys';el.textContent=m.text;$('cnt').textContent=' · '+m.count+' online'}
+ else{el.className='m'+(m.nick===nick?' me':'');const b=document.createElement('b');b.textContent=m.nick;
+  const rp=document.createElement('a');rp.textContent='report';rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id,nick:m.nick,text:m.text})});rp.textContent='reported'};
+  const t=document.createElement('div');t.textContent=m.text;el.append(b,rp,t)}
+ box.append(el);box.scrollTop=box.scrollHeight}
+function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,text:t})}).then(r=>{if(r.status==429)add({system:true,text:'Slow down!',count:''})})}
+$('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
+$('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
+$('priv').onclick=()=>{const id='p-'+Math.random().toString(36).slice(2,8);join(id);prompt('Share this link to invite people:',location.href)};
+async function loadRooms(){try{const l=await (await fetch('/rooms')).json();$('list').innerHTML='';
+ l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
+</script></body></html>
