@@ -18,19 +18,31 @@ const clean = (s, n) => String(s || '').replace(/[\u0000-\u001f]/g, ' ').trim().
 const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function room(name) {
-  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [] });
+  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerIp: null });
   return rooms.get(name);
 }
+
+function getUserList(name) {
+  const r = room(name);
+  const list = [];
+  r.clients.forEach(c => {
+    if (c.nick) list.push({ nick: c.nick, isOwner: c.ip === r.ownerIp, id: c.clientId });
+  });
+  return list;
+}
+
 function broadcast(name, msg) {
   const r = room(name);
-  if (!msg.system) { r.history.push(msg); if (r.history.length > 50) r.history.shift(); }
+  if (!msg.system && msg.text) { r.history.push(msg); if (r.history.length > 50) r.history.shift(); }
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   r.clients.forEach(c => c.write(data));
 }
+
 function limited(ip) {
   const now = Date.now(), a = (hits.get(ip) || []).filter(t => now - t < 10000);
   a.push(now); hits.set(ip, a); return a.length > 8;
 }
+
 function readBody(req, max, cb) {
   let body = '';
   req.on('data', d => { body += d; if (body.length > max) { req.destroy(); } });
@@ -44,23 +56,26 @@ function isBanned(ip) {
   if (b.until && b.until < Date.now()) { bans.delete(ip); return false; }
   return true;
 }
-// Disconnect live SSE clients that match pred(res, roomName), with a last notice.
+
 function kick(pred, text) {
-  const data = `data: ${JSON.stringify({ system: true, text })}\n\n`;
+  const data = `data: ${JSON.stringify({ system: true, type: 'kick', text })}\n\n`;
   for (const [name, r] of rooms) for (const c of [...r.clients]) {
     if (pred(c, name)) c.write(data, () => c.destroy());
   }
 }
+
 function banIp(ip, hours, reason) {
   bans.set(ip, { reason: clean(reason, 100), t: Date.now(), until: hours > 0 ? Date.now() + hours * 3600000 : 0 });
   kick(c => c.ip === ip, 'You have been banned.');
   reports.forEach(r => { if (r.ip === ip && r.status === 'open') r.status = 'banned'; });
 }
+
 function closeRoom(name, reason) {
   closed.set(name, { reason: clean(reason, 100), t: Date.now() });
   kick((c, n) => n === name, 'This room was closed by a moderator.');
   reports.forEach(r => { if (r.room === name && r.status === 'open') r.status = 'closed'; });
 }
+
 function adminAuth(req, res, ip) {
   if (!ADMIN_TOKEN) { res.writeHead(503); res.end('admin disabled'); return false; }
   const now = Date.now(), f = adminFails.get(ip);
@@ -70,11 +85,11 @@ function adminAuth(req, res, ip) {
   adminFails.set(ip, { n: (f && now - f.t < 900000 ? f.n : 0) + 1, t: now });
   res.writeHead(401); res.end(); return false;
 }
+
 function json(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
 
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
-  // On Render the last X-Forwarded-For entry is the one added by Render's proxy = the real client.
   const ip = (req.headers['x-forwarded-for'] || '').split(',').pop().trim() || req.socket.remoteAddress;
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
@@ -86,10 +101,10 @@ http.createServer((req, res) => {
     return res.end(fs.readFileSync(path.join(PUB, file)));
   }
 
-  // ----- admin API (needs x-admin-token header) -----
+  // ----- admin API -----
   if (url.pathname === '/admin/api/state' && req.method === 'GET') {
     if (!adminAuth(req, res, ip)) return;
-    for (const k of [...bans.keys()]) isBanned(k);   // drop expired bans
+    for (const k of [...bans.keys()]) isBanned(k);
     return json(res, 200, {
       reports: reports.map(({ reporters, ...r }) => r),
       bans: [...bans].map(([bip, b]) => ({ ip: bip, ...b })),
@@ -98,6 +113,7 @@ http.createServer((req, res) => {
         .sort((a, b) => b.count - a.count),
     });
   }
+  
   if (url.pathname === '/admin/api/action' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       if (!adminAuth(req, res, ip)) return;
@@ -131,27 +147,50 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(list));
   }
+
+  // ----- Live Chat SSE Stream -----
   if (url.pathname === '/events') {
     const name = String(url.searchParams.get('room') || '').toLowerCase(), nick = clean(url.searchParams.get('nick'), 20);
     if (!okRoom(name) || !nick || (conns.get(ip) || 0) >= 5) { res.writeHead(400); return res.end(); }
     if (isBanned(ip)) { res.writeHead(403); return res.end('banned'); }
     if (closed.has(name)) { res.writeHead(403); return res.end('closed'); }
+
     conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip;
+    res.nick = nick;
+    res.clientId = crypto.randomUUID().slice(0, 8);
+    
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    
     const r = room(name);
-    res.write(`data: ${JSON.stringify({ history: r.history })}\n\n`);
+    // Agar private room (starts with p-) ka pehla user hai to usko owner banao
+    if (name.startsWith('p-') && !r.ownerIp) {
+      r.ownerIp = ip;
+    }
+
+    res.write(`data: ${JSON.stringify({ history: r.history, yourId: res.clientId, isOwner: (ip === r.ownerIp) })}\n\n`);
     r.clients.add(res);
-    broadcast(name, { system: true, text: `${nick} joined`, count: r.clients.size });
+
+    // Live list sync broadcast
+    broadcast(name, { system: true, type: 'join', text: `${nick} joined`, count: r.clients.size, users: getUserList(name) });
+    
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+    
     req.on('close', () => {
       clearInterval(ping); r.clients.delete(res);
       conns.set(ip, Math.max(0, (conns.get(ip) || 1) - 1));
-      broadcast(name, { system: true, text: `${nick} left`, count: r.clients.size });
+      
+      if (r.clients.size === 0 && name.startsWith('p-')) {
+        r.ownerIp = null; // reset owner if empty
+      }
+      
+      broadcast(name, { system: true, type: 'leave', text: `${nick} left`, count: r.clients.size, users: getUserList(name) });
       if (!r.clients.size) setTimeout(() => { if (!r.clients.size) rooms.delete(name); }, 600000);
     });
     return;
   }
+
+  // ----- Send Message Endpoint -----
   if (url.pathname === '/send' && req.method === 'POST') {
     return readBody(req, 5000, body => {
       try {
@@ -160,36 +199,19 @@ http.createServer((req, res) => {
         if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
         if (isBanned(ip) || closed.has(name)) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
+        
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
         const msg = { id: crypto.randomUUID().slice(0, 8), nick, text, t: Date.now() };
-        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t });   // ip stays server-side, never broadcast
+        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t });
+        
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
     });
   }
-  if (url.pathname === '/report' && req.method === 'POST') {
-    return readBody(req, 2000, body => {
-      res.writeHead(204); res.end();
-      if (isBanned(ip) || limited(ip)) return;
-      try {
-        const id = String(JSON.parse(body).id || '').slice(0, 8), src = sent.get(id);
-        if (!src) return;   // we only trust our own copy of the message, not what the client sends
-        const open = reports.find(r => r.msgId === id && r.status === 'open');
-        if (open) { if (!open.reporters.includes(ip)) { open.reporters.push(ip); open.count++; } return; }
-        reports.unshift({ rid: crypto.randomUUID().slice(0, 8), msgId: id, ...src, count: 1, reporters: [ip], status: 'open', at: Date.now() });
-        if (reports.length > 200) reports.pop();
-        console.log('REPORT', src.room, src.nick, src.text.slice(0, 100));
-      } catch {}
-    });
-  }
-  res.writeHead(404); res.end('Not found');
-}).listen(PORT, () => console.log('JenChat running on port ' + PORT + (ADMIN_TOKEN ? '' : ' (admin disabled: set ADMIN_TOKEN)')));
 
-setInterval(() => {
-  const n = Date.now();
-  for (const [k, a] of hits) if (!a.some(t => n - t < 10000)) hits.delete(k);
-  for (const [k, f] of adminFails) if (n - f.t > 900000) adminFails.delete(k);
-}, 60000);
-process.on('uncaughtException', e => console.error('ERR', e));
+  // ----- Live Typing Status updates -----
+  if (url.pathname === '/typing' && req.method === 'POST') {
+    return readBody(req, 1000, body => {
+      try {
