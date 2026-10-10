@@ -13,6 +13,7 @@ h2 small{font-size:14px;color:var(--mut);font-weight:400}
 <input type="text" id="tok" placeholder="Admin token" autocomplete="off" aria-label="Admin token"><br><br><button id="go">Log in</button><p id="err"></p></div>
 <div id="dash" hidden>
 <header class="top"><a class="brand" href="/"><img src="/logo.svg" alt="">Jen<span>Chat</span> admin</a><button class="ghost" id="out">Log out</button></header>
+<p id="store" class="mut"></p>
 <h2>Open reports <small id="rc"></small></h2><div id="reports"></div>
 <h2>Live rooms</h2><div id="live"></div>
 <h2>Closed rooms</h2><div id="closed"></div>
@@ -36,6 +37,9 @@ async function load(){try{render(await (await call('/admin/api/state')).json())}
 const time=t=>new Date(t).toLocaleString();
 function empty(box,text){box.append(h('p',text,'mut'))}
 function render(s){
+ $('store').textContent=s.storage==='database'?'Storage: saved in database. Bans, closed rooms and reports survive restarts.'
+  :s.storage==='connecting'?'Storage: database configured but not reachable yet. Changes are kept and will be saved once it connects.'
+  :'Storage: memory only. Everything here is lost when the server restarts.';
  const R=$('reports');R.innerHTML='';const open=s.reports.filter(r=>r.status==='open');
  $('rc').textContent='('+open.length+')';if(!open.length)empty(R,'No open reports.');
  open.forEach(r=>{const c=h('div','','card'),top=h('div');

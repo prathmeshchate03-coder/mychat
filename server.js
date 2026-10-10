@@ -54,11 +54,64 @@ function readBody(req, max, cb) {
   req.on('end', () => cb(body));
 }
 
+// ---------- persistence (optional) ----------
+// Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to keep bans, closed rooms and reports across restarts.
+// Without them everything stays in memory exactly as before. Chat messages are never stored.
+const DB_URL = process.env.UPSTASH_REDIS_REST_URL || '', DB_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const REPORT_KEEP = 14 * 86400000, SAVE_DELAY = 10000;
+let dbReady = !DB_URL, saveTimer = null;
+const dirty = new Set();
+async function dbCmd(cmd) {
+  const r = await fetch(DB_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + DB_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify(cmd), signal: AbortSignal.timeout(5000) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
+  return j.result;
+}
+const dump = { bans: () => [...bans], closed: () => [...closed], reports: () => reports.filter(r => r.at > Date.now() - REPORT_KEEP) };
+function touch(k) { if (!DB_URL) return; dirty.add(k); if (dbReady && !saveTimer) saveTimer = setTimeout(flush, SAVE_DELAY); }
+async function flush() {
+  clearTimeout(saveTimer); saveTimer = null;
+  if (!dbReady) return;   // never write before the old data was read, or we would overwrite it with an empty list
+  for (const k of [...dirty]) {
+    dirty.delete(k);      // removed before the await, so a change made during the save marks it dirty again
+    try { await dbCmd(['SET', 'jc:' + k, JSON.stringify(dump[k]())]); }
+    catch (e) { console.error('DB SAVE FAILED', k, e.message); dirty.add(k); if (!saveTimer) saveTimer = setTimeout(flush, 30000); }
+  }
+}
+// Merge what the database has into memory. Anything already in memory wins.
+function mergeLoaded(k, data) {
+  const now = Date.now();
+  if (k === 'bans') data.forEach(e => { if (Array.isArray(e) && okIp(String(e[0])) && e[1] && !bans.has(e[0]) && (!e[1].until || e[1].until > now)) bans.set(e[0], e[1]); });
+  else if (k === 'closed') data.forEach(e => { if (Array.isArray(e) && okRoom(String(e[0])) && e[1] && !closed.has(e[0])) closed.set(e[0], e[1]); });
+  else {
+    const have = new Set(reports.map(r => r.rid));
+    data.forEach(r => { if (r && r.rid && r.at > now - REPORT_KEEP && !have.has(r.rid)) reports.push(r); });
+    reports.sort((a, b) => b.at - a.at); reports.length = Math.min(reports.length, 200);
+  }
+}
+async function dbLoad() {
+  try {
+    for (const k of Object.keys(dump)) {
+      const raw = await dbCmd(['GET', 'jc:' + k]);
+      if (raw) { const d = JSON.parse(raw); if (Array.isArray(d)) mergeLoaded(k, d); }
+    }
+    dbReady = true;
+    console.log(`DB loaded: ${bans.size} bans, ${closed.size} closed rooms, ${reports.length} reports`);
+    if (dirty.size) flush();
+  } catch (e) { console.error('DB LOAD FAILED, retrying in 30s:', e.message); setTimeout(dbLoad, 30000); }
+}
+if (DB_URL) dbLoad();
+async function shutdown() {   // Render sends SIGTERM on every deploy: save pending changes first
+  try { await Promise.race([flush(), new Promise(r => setTimeout(r, 4000))]); } finally { process.exit(0); }
+}
+process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
+
 // ---------- moderation ----------
 function isBanned(ip) {
   const b = bans.get(ip);
   if (!b) return false;
-  if (b.until && b.until < Date.now()) { bans.delete(ip); return false; }
+  if (b.until && b.until < Date.now()) { bans.delete(ip); touch('bans'); return false; }
   return true;
 }
 // Disconnect live SSE clients that match pred(res, roomName), with a last notice.
@@ -72,11 +125,13 @@ function banIp(ip, hours, reason) {
   bans.set(ip, { reason: clean(reason, 100), t: Date.now(), until: hours > 0 ? Date.now() + hours * 3600000 : 0 });
   kick(c => c.ip === ip, 'You have been banned.');
   reports.forEach(r => { if (r.ip === ip && r.status === 'open') r.status = 'banned'; });
+  touch('bans'); touch('reports');
 }
 function closeRoom(name, reason) {
   closed.set(name, { reason: clean(reason, 100), t: Date.now() });
   kick((c, n) => n === name, 'This room was closed by a moderator.');
   reports.forEach(r => { if (r.room === name && r.status === 'open') r.status = 'closed'; });
+  touch('closed'); touch('reports');
 }
 function adminAuth(req, res, ip) {
   if (!ADMIN_TOKEN) { res.writeHead(503); res.end('admin disabled'); return false; }
@@ -113,6 +168,7 @@ http.createServer((req, res) => {
       closed: [...closed].map(([name, c]) => ({ name, ...c })),
       live: [...rooms].filter(([, r]) => r.clients.size).map(([name, r]) => ({ name, count: r.clients.size }))
         .sort((a, b) => b.count - a.count),
+      storage: !DB_URL ? 'memory' : dbReady ? 'database' : 'connecting',
     });
   }
   if (url.pathname === '/admin/api/action' && req.method === 'POST') {
@@ -126,15 +182,15 @@ http.createServer((req, res) => {
           if (!okIp(target)) return json(res, 400, { error: 'bad ip' });
           banIp(target, hours, m.reason || (rep ? 'reported: ' + rep.text : 'manual'));
         } else if (m.a === 'unban') {
-          bans.delete(String(m.ip || ''));
+          if (bans.delete(String(m.ip || ''))) touch('bans');
         } else if (m.a === 'close') {
           const name = rep ? rep.room : String(m.room || '').toLowerCase();
           if (!okRoom(name)) return json(res, 400, { error: 'bad room' });
           closeRoom(name, m.reason || 'moderator');
         } else if (m.a === 'open') {
-          closed.delete(String(m.room || ''));
+          if (closed.delete(String(m.room || ''))) touch('closed');
         } else if (m.a === 'dismiss') {
-          if (rep) rep.status = 'dismissed';
+          if (rep) { rep.status = 'dismissed'; touch('reports'); }
         } else return json(res, 400, { error: 'unknown action' });
         json(res, 200, { ok: true });
       } catch { json(res, 400, { error: 'bad request' }); }
@@ -231,9 +287,10 @@ http.createServer((req, res) => {
         const id = String(JSON.parse(body).id || '').slice(0, 8), src = sent.get(id);
         if (!src) return;   // we only trust our own copy of the message, not what the client sends
         const open = reports.find(r => r.msgId === id && r.status === 'open');
-        if (open) { if (!open.reporters.includes(ip)) { open.reporters.push(ip); open.count++; } return; }
+        if (open) { if (!open.reporters.includes(ip)) { open.reporters.push(ip); open.count++; touch('reports'); } return; }
         reports.unshift({ rid: crypto.randomUUID().slice(0, 8), msgId: id, ...src, count: 1, reporters: [ip], status: 'open', at: Date.now() });
         if (reports.length > 200) reports.pop();
+        touch('reports');
         console.log('REPORT', src.room, src.nick, src.text.slice(0, 100));
       } catch {}
     });
@@ -246,5 +303,8 @@ setInterval(() => {
   for (const [k, a] of hits) if (!a.some(t => n - t < 10000)) hits.delete(k);
   for (const [k, f] of adminFails) if (n - f.t > 900000) adminFails.delete(k);
   for (const [k, t] of typingAt) if (n - t > 10000) typingAt.delete(k);
+  let pruned = false;   // reports are newest first, so the oldest are at the end
+  while (reports.length && reports[reports.length - 1].at < n - REPORT_KEEP) { reports.pop(); pruned = true; }
+  if (pruned) touch('reports');
 }, 60000);
 process.on('uncaughtException', e => console.error('ERR', e));
