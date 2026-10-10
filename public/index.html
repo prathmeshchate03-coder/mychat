@@ -3,41 +3,130 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>JenChat - Anonymous Free Guest Chat Rooms</title>
-  <meta name="description" content="Create free instant private or public online chat rooms. No registration or signup required. Fast, clean, and anonymous chatting.">
-  <meta name="keywords" content="free chat, anonymous chat, guest chat, private chat room, create chat room">
-  <meta name="robots" content="index, follow">
-  
-  <!-- Open Graph / Facebook -->
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="JenChat - Anonymous Free Guest Chat Rooms">
-  <meta property="og:description" content="Create free instant private or public online chat rooms. No registration required.">
-  
-  <link rel="icon" href="/logo.svg">
+  <title>JenChat - Secure Chat & Social Portal</title>
+  <meta name="description" content="Register or enter instantly. Create free private chat rooms, add global friends, and pick cool profile avatars.">
   <link rel="stylesheet" href="/style.css">
+  <style>
+    .auth-container { max-width: 400px; margin: 50px auto; padding: 25px; border: 1px solid #ddd; border-radius: 8px; background: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+    .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+    .tab-btn { flex: 1; padding: 10px; cursor: pointer; border: none; background: #f0f0f0; border-radius: 4px; font-weight: bold; }
+    .tab-btn.active { background: #007bff; color: white; }
+    .form-group { margin-bottom: 15px; }
+    .form-group label { display: block; margin-bottom: 5px; font-size: 14px; }
+    .form-group input, .form-group select { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+    .avatar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 5px; }
+    .avatar-option { font-size: 24px; text-align: center; cursor: pointer; padding: 5px; border: 2px solid transparent; border-radius: 4px; }
+    .avatar-option.selected { border-color: #007bff; background: #e6f2ff; }
+    .submit-btn { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
+    .submit-btn:hover { background: #218838; }
+    .guest-link { display: block; text-align: center; margin-top: 15px; color: #666; text-decoration: none; font-size: 14px; }
+  </style>
 </head>
 <body>
-<div class="wrap">
-<header class="top"><a class="brand" href="/"><img src="/logo.svg" alt="">Jen<span>Chat</span></a>
-<nav><a href="/legal#about">About</a><a href="/legal#privacy">Privacy</a><a href="/legal#contact">Contact</a></nav></header>
-<section class="hero"><h1>Talk to anyone. No sign-up.</h1>
-<p>Pick a nickname, join a room, and start chatting. Make a private room and share the link with friends.</p>
-<a class="btn" href="/chat">Enter chat</a></section>
-<h2>Jump into a topic</h2>
-<ul class="cats">
-<li><a href="/chat#music">Music</a></li><li><a href="/chat#gaming">Gaming</a></li><li><a href="/chat#anime">Anime</a></li>
-<li><a href="/chat#movies">Movies</a></li><li><a href="/chat#news">News</a></li><li><a href="/chat#english">English learning</a></li>
-<li><a href="/chat#food">Food</a></li><li><a href="/chat#friends">Friends</a></li><li><a href="/chat#memes">Memes</a></li>
-<li><a href="/chat#science">Science</a></li><li><a href="/chat#history">History</a></li><li><a href="/chat#lobby">Lobby</a></li></ul>
-<h2>Why JenChat</h2>
-<div class="feat">
-<div><h3>One click to start</h3><p>No account, no email. Choose a nickname and you are in.</p></div>
-<div><h3>Public and private rooms</h3><p>Browse busy rooms, or create a private room and invite people with a link.</p></div>
-<div><h3>Works on your phone</h3><p>The same chat on mobile, tablet and desktop.</p></div>
-<div><h3>Report and rate limits</h3><p>Every message has a report button, and spam is slowed down automatically.</p></div></div>
-<h2>Questions</h2>
-<div class="feat">
-<div><h3>Are my messages saved?</h3><p>Only the last 50 messages of a room stay in memory. They are gone when the room empties or the server restarts.</p></div>
-<div><h3>Who can use JenChat?</h3><p>People aged 18 and over. Please never share personal details with strangers.</p></div></div>
-<footer><a href="/legal#about">About</a><a href="/legal#privacy">Privacy</a><a href="/legal#terms">Terms</a><a href="/legal#contact">Contact</a><br>JenChat. All rights reserved.</footer>
-</div></body></html>
+
+  <header style="text-align: center; margin-top: 30px;">
+    <h1>Welcome to JenChat ✨</h1>
+    <p>Connect securely, pick your avatar, and add friends globally</p>
+  </header>
+
+  <div class="auth-container">
+    <div class="tabs">
+      <button class="tab-btn active" id="tab-login" onclick="switchTab('login')">Login</button>
+      <button class="tab-btn" id="tab-register" onclick="switchTab('register')">Register</button>
+    </div>
+
+    <div id="auth-form-box">
+      <!-- Dynamic Form Content injected here -->
+    </div>
+  </div>
+
+  <script>
+    let activeTab = 'login';
+    let selectedAvatar = '🐱';
+
+    function switchTab(type) {
+      activeTab = type;
+      document.getElementById('tab-login').className = type === 'login' ? 'tab-btn active' : 'tab-btn';
+      document.getElementById('tab-register').className = type === 'register' ? 'tab-btn active' : 'tab-btn';
+      renderForm();
+    }
+
+    function selectAvatar(emoji) {
+      selectedAvatar = emoji;
+      document.querySelectorAll('.avatar-option').forEach(el => {
+        el.className = el.innerText === emoji ? 'avatar-option selected' : 'avatar-option';
+      });
+    }
+
+    function renderForm() {
+      const box = document.getElementById('auth-form-box');
+      if (activeTab === 'login') {
+        box.innerHTML = `
+          <form onsubmit="handleAuth(event)">
+            <div class="form-group"><label>Username</label><input type="text" id="username" required autocomplete="username"></div>
+            <div class="form-group"><label>Password</label><input type="password" id="password" required autocomplete="current-password"></div>
+            <button type="submit" class="submit-btn">Sign In</button>
+          </form>
+        `;
+      } else {
+        box.innerHTML = `
+          <form onsubmit="handleAuth(event)">
+            <div class="form-group"><label>Choose Username</label><input type="text" id="username" required autocomplete="username"></div>
+            <div class="form-group"><label>Create Password</label><input type="password" id="password" required autocomplete="new-password"></div>
+            <div class="form-group">
+              <label>Select Profile Avatar</label>
+              <div class="avatar-grid">
+                <div class="avatar-option selected" onclick="selectAvatar('🐱')">🐱</div>
+                <div class="avatar-option" onclick="selectAvatar('🦊')">🦊</div>
+                <div class="avatar-option" onclick="selectAvatar('🤖')">🤖</div>
+                <div class="avatar-option" onclick="selectAvatar('🥷')">🥷</div>
+                <div class="avatar-option" onclick="selectAvatar('🐼')">🐼</div>
+                <div class="avatar-option" onclick="selectAvatar('🦁')">🦁</div>
+                <div class="avatar-option" onclick="selectAvatar('👽')">👽</div>
+                <div class="avatar-option" onclick="selectAvatar('🦄')">🦄</div>
+              </div>
+            </div>
+            <button type="submit" class="submit-btn">Create Free Account</button>
+          </form>
+        `;
+      }
+    }
+
+    async function handleAuth(e) {
+      e.preventDefault();
+      const u = document.getElementById('username').value.trim();
+      const p = document.getElementById('password').value;
+      const endpoint = activeTab === 'login' ? '/api/login' : '/api/register';
+      const payload = { username: u, password: p };
+      
+      if (activeTab === 'register') payload.avatar = selectedAvatar;
+
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        
+        if (data.ok) {
+          // Store basic profile credentials locally
+          localStorage.setItem('chat_token', data.token);
+          localStorage.setItem('chat_nick', data.username);
+          localStorage.setItem('chat_avatar', data.avatar);
+          
+          // Redirect to dynamic lobby or default global room
+          window.location.href = `/chat?room=global&nick=${encodeURIComponent(data.username)}&avatar=${encodeURIComponent(data.avatar)}`;
+        } else {
+          alert(data.error || 'Authentication Failed!');
+        }
+      } catch(err) {
+        alert('Server connection error. Try again.');
+      }
+    }
+
+    // Load form initial call
+    renderForm();
+  </script>
+</body>
+</html>
