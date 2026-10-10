@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://sitemaps.org">
+  <url>
+    <loc>https://onrender.com</loc>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://onrender.comchat</loc>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://onrender.comlegal</loc>
+    <priority>0.3</priority>
+  </url>
+</urlset>
