@@ -37,9 +37,9 @@ async function load(){try{render(await (await call('/admin/api/state')).json())}
 const time=t=>new Date(t).toLocaleString();
 function empty(box,text){box.append(h('p',text,'mut'))}
 function render(s){
- $('store').textContent=s.storage==='database'?'Storage: saved in database. Bans, closed rooms and reports survive restarts.'
+ $('store').textContent=(s.storage==='database'?'Storage: saved in database. Bans, closed rooms and reports survive restarts.'
   :s.storage==='connecting'?'Storage: database configured but not reachable yet. Changes are kept and will be saved once it connects.'
-  :'Storage: memory only. Everything here is lost when the server restarts.';
+  :'Storage: memory only. Everything here is lost when the server restarts.')+(s.dbError?' Problem: '+s.dbError:'');
  const R=$('reports');R.innerHTML='';const open=s.reports.filter(r=>r.status==='open');
  $('rc').textContent='('+open.length+')';if(!open.length)empty(R,'No open reports.');
  open.forEach(r=>{const c=h('div','','card'),top=h('div');

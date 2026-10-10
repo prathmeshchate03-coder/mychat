@@ -50,3 +50,18 @@ button.sm{padding:3px 10px;font-size:12px;font-weight:500}
 #emojis button{padding:4px 0;font-size:20px;line-height:1.3;background:transparent;border:0}#emojis button:hover{background:#34343c}
 #emo{padding:8px 12px;font-size:18px;line-height:1}
 .m a[role=button]:focus-visible{color:var(--y)}
+/* content pages (topics, blog) */
+.brand{gap:0}.brand img{margin-right:10px}
+nav[aria-label=Main]{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:2px 0}
+.crumbs{font-size:14px;color:var(--mut);margin:8px 0 0}.crumbs a{color:var(--mut)}
+.doc h1{font-size:clamp(28px,5vw,42px);line-height:1.15;margin:12px 0}
+.doc h3{margin:22px 0 2px;font-size:18px;color:var(--y)}
+.lead{font-size:19px;color:#e0e0e6!important}.mut{color:var(--mut)!important}
+.doc .btn{margin:6px 8px 6px 0}
+.cards{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.cards a{display:block;height:100%;padding:14px;border-radius:12px;background:var(--card);border:1px solid var(--line);color:#fff;text-decoration:none}
+.cards a:hover{border-color:var(--y)}.cards b{display:block;color:var(--y);margin-bottom:4px}
+.cards span,.cards small{display:block;color:#c8c8d0;font-size:15px}.cards small{color:var(--mut);margin-top:6px;font-size:13px}
+.doc article h2{font-size:22px;margin:32px 0 8px}.doc article ul,.doc article ol{padding-left:22px}.doc article li{margin:4px 0}
+.guides{padding-left:20px}.guides li{margin:6px 0}
+.crumbs a{margin:0}

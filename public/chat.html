@@ -1,197 +1,115 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>JenChat - Dashboard Portal</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1e1e24; color: #f5f5f5; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-    
-    /* Top Warning Notification Bar */
-    .alert-banner { background: #2b3a4a; border-bottom: 2px solid #3b4a5a; padding: 12px 20px; text-align: center; font-size: 14px; color: #e0e0e0; display: flex; justify-content: center; align-items: center; gap: 10px; }
-    .alert-banner a { color: #5dade2; text-decoration: none; font-weight: bold; background: rgba(93,173,226,0.1); padding: 4px 10px; border-radius: 4px; border: 1px solid rgba(93,173,226,0.3); }
-    .alert-banner a:hover { background: rgba(93,173,226,0.2); }
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"></head><body>
+<div id="gate"><a class="brand" href="/" style="justify-content:center"><img src="/logo.svg" alt="">Jen<span>Chat</span></a>
+<p>Free guest chat. No sign-up.</p><input type="text" id="nick" maxlength="20" placeholder="Pick a nickname" aria-label="Nickname"><br><br>
+<label><input type="checkbox" id="age"> I am 18 or older and will be respectful</label><br><br>
+<button id="go">Enter chat</button><p style="color:var(--mut);font-size:13px">Never share personal information with strangers.</p></div>
+<div id="app" hidden><aside id="side"><a class="brand" href="/" style="font-size:18px"><img src="/logo.svg" alt="" style="width:28px;height:28px">Jen<span>Chat</span></a>
+<input type="text" id="q" placeholder="Search rooms" aria-label="Search rooms"><div id="list"></div>
+<b>Topics</b><div class="chips" id="chips"></div>
+<input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
+<button id="priv" class="ghost">Create private room</button></aside>
+<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button></div>
+<div id="users" hidden></div>
+<div id="msgs" aria-live="polite"></div>
+<div id="typing" aria-live="polite"></div>
+<div id="emojis" hidden></div>
+<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<script>
+const $=id=>document.getElementById(id);
+let nick=localStorage.nick,room,es,otok='',me={id:'',owner:false},users=[],lastTyping=0;
+const typers=new Map();
+// uid: a random id kept in this browser. It lets people block someone even if the nickname changes.
+let uid=localStorage.uid;if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
+let blocked={};try{blocked=JSON.parse(localStorage.blocked||'{}')||{}}catch{}
+const saveBlocked=()=>{try{localStorage.blocked=JSON.stringify(blocked)}catch{}};
+const slug=s=>s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30);
+function el(tag,txt,cls){const e=document.createElement(tag);if(txt!=null&&txt!=='')e.textContent=txt;if(cls)e.className=cls;return e}
+$('nick').value=nick||'Guest'+Math.floor(Math.random()*9000+1000);
+['music','gaming','anime','movies','news','english','food','friends'].forEach(t=>{const b=document.createElement('button');b.textContent=t;b.onclick=()=>join(t);$('chips').append(b)});
+function start(){$('gate').hidden=true;$('app').hidden=false;join(location.hash.slice(1)||'lobby');loadRooms();setInterval(loadRooms,5000)}
+$('go').onclick=()=>{if(!$('age').checked)return alert('Please confirm you are 18 or older');
+ nick=$('nick').value.trim().slice(0,20)||'Guest';localStorage.nick=nick;start()};
 
-    /* Main Dashboard Layout Structure */
-    .dashboard-layout { display: flex; flex: 1; overflow: hidden; }
-    
-    /* LEFT CONTAINER: Sidebar Navigator */
-    .sidebar { width: 320px; background: #141419; border-right: 1px solid #2d2d35; display: flex; flex-direction: column; }
-    .profile-header { padding: 15px; border-bottom: 1px solid #2d2d35; display: flex; align-items: center; gap: 12px; }
-    .profile-avatar { font-size: 32px; background: #2d2d35; width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
-    .profile-info h4 { margin: 0; font-size: 16px; color: #fff; }
-    .profile-info p { margin: 2px 0 0; font-size: 12px; color: #888; font-style: italic; }
-    
-    /* Navigation Filtering Tabs */
-    .nav-tabs { display: flex; padding: 10px 15px; gap: 8px; border-bottom: 1px solid #2d2d35; }
-    .tab-item { background: none; border: none; color: #888; font-size: 13px; font-weight: bold; padding: 6px 12px; border-radius: 20px; cursor: pointer; text-transform: uppercase; }
-    .tab-item.active { background: #ffcc00; color: #141419; }
-    
-    .list-section-title { font-size: 11px; text-transform: uppercase; color: #555; padding: 15px 15px 5px; font-weight: bold; letter-spacing: 1px; }
-    .scrollable-list { flex: 1; overflow-y: auto; padding: 5px 10px; }
-    .user-card-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; margin-bottom: 6px; background: #1c1c22; border-radius: 6px; transition: background 0.2s; }
-    .user-card-item:hover { background: #25252d; }
-    .user-meta { display: flex; align-items: center; gap: 10px; }
-    .add-btn { background: #007bff; border: none; color: white; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; }
-    
-    /* RIGHT CONTAINER: Main Workdesk Viewport */
-    .main-workspace { flex: 1; overflow-y: auto; padding: 30px; display: flex; flex-direction: column; align-items: center; }
-    .search-bar-container { width: 100%; max-width: 650px; margin-bottom: 30px; position: relative; }
-    .search-input { width: 100%; padding: 14px 20px; background: #25252d; border: 1px solid #3a3a45; border-radius: 30px; color: #fff; font-size: 15px; outline: none; }
-    .search-input:focus { border-color: #ffcc00; }
-    
-    /* Operational Flex Cards View layout */
-    .workspace-section { width: 100%; max-width: 650px; margin-bottom: 25px; }
-    .section-header-toggle { font-size: 16px; font-weight: bold; color: #aaa; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-    
-    .feature-card { background: #25252d; border-radius: 12px; border: 1px solid #2d2d35; padding: 25px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
-    .feature-card h3 { font-size: 20px; margin-bottom: 8px; color: #fff; display: flex; align-items: center; gap: 8px; }
-    .feature-card p { font-size: 14px; color: #aaa; margin-bottom: 20px; line-height: 1.4; }
-    
-    .action-row { display: flex; gap: 12px; }
-    .btn-primary { background: #ffcc00; color: #141419; border: none; padding: 12px 24px; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
-    .btn-primary:hover { background: #e6b800; }
-    .btn-secondary { background: #3a3a45; color: #fff; border: none; padding: 12px 20px; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; }
-    
-    /* Footer Friend List Segment inside side layout */
-    .friend-row-item { padding: 8px 10px; background: rgba(40,167,69,0.05); border: 1px solid rgba(40,167,69,0.1); border-radius: 6px; font-size: 14px; margin-bottom: 6px; color: #28a745; display: flex; align-items: center; gap: 8px; }
-  </style>
-</head>
-<body>
+function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';
+ users=[];me={id:'',owner:false};typers.clear();showTyping();$('cnt').hidden=true;closePanels();
+ otok=localStorage.getItem('otok:'+name)||'';
+ if(es)es.close();
+ es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick)+'&uid='+uid+(otok?'&otok='+otok:''));
+ es.onmessage=e=>{const d=JSON.parse(e.data);
+  if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);renderUsers()}
+  else if(d.typing)onTyping(d);
+  else add(d)};
+ es.onerror=()=>{if(es.readyState===2)notice('Cannot join this room. You may be banned or removed, the room may be closed, or you have too many tabs open.')};
+ $('side').classList.remove('open')}
+function notice(t){const d=el('div',t,'sys');$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
 
-  <!-- Top Alert Bar View -->
-  <div class="alert-banner">
-    <span>Please secure your session settings. Verify your registered profile account status details immediately.</span>
-    <a href="#" onclick="alert('Profile secure verified!')">CLICK TO VERIFY</a>
-  </div>
+function add(m){const box=$('msgs');
+ if(m.system){const d=el('div',m.text,'sys');
+  if(m.users){users=m.users;renderUsers()}
+  box.append(d);box.scrollTop=box.scrollHeight;return}
+ if(m.uid&&blocked[m.uid])return;
+ const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
+ const b=el('b',m.nick);d.append(b);
+ if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
+ const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
+ rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
+ d.append(rp,el('div',m.text));box.append(d);box.scrollTop=box.scrollHeight}
 
-  <div class="dashboard-layout">
-    <!-- LEFT SIDEBAR CONTAINER -->
-    <div class="sidebar">
-      <div class="profile-header">
-        <div class="profile-avatar" id="my-avatar-display">🐱</div>
-        <div class="profile-info">
-  <h4 id="my-name-display" style="color: #ffcc00; font-weight: bold; font-size: 16px;">Username</h4>
-  <p id="my-status-phrase" style="color: #28a745; font-size: 12px; font-weight: 500;">🟢 Online Member</p>
-</div>
-      </div>
-      
-      <!-- Filter Nav Bar Tabs Section -->
-      <div class="nav-tabs">
-        <button class="tab-item active">All</button>
-        <button class="tab-item">People</button>
-        <button class="tab-item">Rooms</button>
-      </div>
+// ---- users panel, block, kick ----
+function renderUsers(){
+ const c=$('cnt');c.hidden=!users.length;c.textContent=users.length+' online';
+ const p=$('users');p.innerHTML='';
+ users.forEach(u=>{const row=el('div','','urow');
+  row.append(el('span',u.nick+(u.id===me.id?' (you)':''),'un'));
+  if(u.owner)row.append(el('span','owner','badge'));
+  if(u.id!==me.id){
+   if(u.uid&&u.uid!==uid){const bb=el('button',blocked[u.uid]?'Unblock':'Block','ghost sm');bb.onclick=()=>blocked[u.uid]?unblock(u.uid):block(u.uid,u.nick);row.append(bb)}
+   if(me.owner&&!u.owner){const kb=el('button','Kick','ghost sm');kb.onclick=()=>kickUser(u);row.append(kb)}}
+  p.append(row)});
+ const ids=Object.keys(blocked);
+ if(ids.length){p.append(el('div','Blocked','uh'));
+  ids.forEach(id=>{const row=el('div','','urow');row.append(el('span',blocked[id],'un'));const ub=el('button','Unblock','ghost sm');ub.onclick=()=>unblock(id);row.append(ub);p.append(row)})}}
+function block(id,name){if(Object.keys(blocked).length>=200)return notice('Block list is full.');
+ blocked[id]=name;saveBlocked();
+ document.querySelectorAll('#msgs .m').forEach(m=>{if(m.dataset.uid===id)m.remove()});
+ notice('Blocked '+name+'. You can undo it from the online list.');renderUsers()}
+function unblock(id){delete blocked[id];saveBlocked();renderUsers();notice('Unblocked. Their new messages will show again.')}
+function kickUser(u){if(!confirm('Remove '+u.nick+' from this room?'))return;
+ fetch('/kick',{method:'POST',body:JSON.stringify({room,otok,cid:u.id})}).then(r=>{if(r.status===204)notice(u.nick+' was removed.');else notice('Could not remove '+u.nick+'.')})}
+function closePanels(){$('users').hidden=true;$('emojis').hidden=true;$('cnt').setAttribute('aria-expanded','false');$('emo').setAttribute('aria-expanded','false')}
+$('cnt').onclick=()=>{const open=$('users').hidden;closePanels();$('users').hidden=!open;$('cnt').setAttribute('aria-expanded',String(open))};
 
-      <div class="list-section-title">Active Global Stream</div>
-      <div class="scrollable-list" id="users-list-box">
-        <!-- Live Users update loops hooks -->
-      </div>
-      
-      <div class="list-section-title">My Friends List</div>
-      <div class="scrollable-list" id="friends-list-box" style="max-height: 200px;">
-        <!-- Friends records arrays -->
-      </div>
-    </div>
+// ---- typing indicator ----
+function onTyping(d){if(d.uid===uid||(d.uid&&blocked[d.uid]))return;
+ clearTimeout(typers.get(d.nick));typers.set(d.nick,setTimeout(()=>{typers.delete(d.nick);showTyping()},3500));showTyping()}
+function showTyping(){const n=[...typers.keys()];
+ $('typing').textContent=!n.length?'':n.length===1?n[0]+' is typing...':n.length===2?n[0]+' and '+n[1]+' are typing...':'Several people are typing...'}
+$('text').oninput=()=>{const now=Date.now();
+ if($('text').value&&now-lastTyping>2500){lastTyping=now;fetch('/typing',{method:'POST',body:JSON.stringify({room,nick,uid})}).catch(()=>{})}};
 
-    <!-- MAIN DASHBOARD CONTENT AREA -->
-    <div class="main-workspace">
-      <!-- Top Center Input filter -->
-      <div class="search-bar-container">
-        <input type="text" class="search-input" id="room-search" placeholder="Search rooms or enter invite code to join...">
-      </div>
+// ---- emoji ----
+'😀 😂 🤣 😊 😍 😘 😎 🤔 😅 😭 😡 😴 🙄 😉 🥳 😇 👍 👎 👏 🙏 💪 🔥 ❤️ 💔 ✨ 🎉 🎵 🎮 🍕 ☕ 🌙 ⭐'.split(' ').forEach(e=>{
+ const b=el('button',e,'ghost');b.setAttribute('aria-label','Insert '+e);
+ b.onclick=()=>{const t=$('text'),s=t.selectionStart??t.value.length,x=t.selectionEnd??s;
+  if(t.value.length-(x-s)+e.length>t.maxLength)return;
+  t.value=t.value.slice(0,s)+e+t.value.slice(x);t.focus();t.selectionStart=t.selectionEnd=s+e.length};
+ $('emojis').append(b)});
+$('emo').onclick=()=>{const open=$('emojis').hidden;closePanels();$('emojis').hidden=!open;$('emo').setAttribute('aria-expanded',String(open))};
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
 
-      <!-- Workspace Section Card: Room Creation Portal -->
-      <div class="workspace-section">
-        <div class="section-header-toggle">
-          <span>Your Chat Rooms</span>
-          <span>▲</span>
-        </div>
-        
-        <div class="feature-card">
-          <h3>Create Chat Room</h3>
-          <p>Give a home to your ideas. Invite dynamic global friends & hold continuous secure live text discussions.</p>
-          <div class="action-row">
-            <button class="btn-primary" onclick="triggerCreateRoom()">CREATE NOW</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Workspace Section Card: Default Primary Channels -->
-      <div class="workspace-section">
-        <div class="section-header-toggle">
-          <span>Featured Channels</span>
-        </div>
-        
-        <div class="feature-card" style="border-left: 4px solid #ffcc00;">
-          <h3>The Global Lounge 🌎</h3>
-          <p>The standard public lobby channel open for all verified online platform accounts worldwide.</p>
-          <div class="action-row">
-            <button class="btn-primary" onclick="joinRoom('global')">JOIN LOBBY CHAT</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    const nick = localStorage.getItem('chat_nick') || 'Guest_' + Math.floor(Math.random()*100);
-    const avatar = localStorage.getItem('chat_avatar') || '🐱';
-
-    // Populate Current Profile UI details items
-    document.getElementById('my-name-display').innerText = nick;
-    document.getElementById('my-avatar-display').innerText = avatar;
-
-    // Connect SSE loop to monitor active user channels array list
-    const es = new EventSource(`/events?room=global&nick=${encodeURIComponent(nick)}`);
-
-    es.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.system && data.users) {
-        renderSidebarList(data.users);
-      }
-    };
-
-    function renderSidebarList(users) {
-      const box = document.getElementById('users-list-box');
-      box.innerHTML = '';
-      users.forEach(u => {
-        const item = document.createElement('div');
-        item.className = 'user-card-item';
-        item.innerHTML = `
-          <div class="user-meta">
-            <span style="font-size:20px;">${u.avatar || '🐱'}</span>
-            <span style="font-size:14px; font-weight:500;">${u.nick}</span>
-          </div>
-        `;
-        if (u.nick.toLowerCase() !== nick.toLowerCase()) {
-          const btn = document.createElement('button');
-          btn.className = 'add-btn';
-          btn.innerText = '+ Friend';
-          btn.onclick = () => addFriendAction(u.nick);
-          item.appendChild(btn);
-        }
-        box.appendChild(item);
-      });
-    }
-
-    async function addFriendAction(friendName) {
-      const res = await fetch('/api/add-friend', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ me: nick, friend: friendName })
-      });
-      const data = await res.json();
-      if (data.ok) { alert('Friend added!'); syncFriendsList(); }
-      else { alert(data.error || 'Operation failed'); }
-    }
-
-    async function syncFriendsList() {
-      const res = await fetch(`/api/friends?user=${nick}`);
-      const list = await res.json();
-      const box = document.getElementById('friends-list-box');
-      box.innerHTML = list.length ? '' : '<span style="color:#444; font-size:13px; padding-left:5px;">No active friends yet</span>';
-      list.forEach(f => {
-        const div = document.createElement('div');
-        div.className = 'friend-row-item';
+function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned, removed or room closed).')})}
+$('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
+$('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
+$('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6)),name='p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
+ // secret that proves ownership of this private room; stays in this browser only
+ localStorage.setItem('otok:'+name,[...crypto.getRandomValues(new Uint8Array(12))].map(x=>x.toString(16).padStart(2,'0')).join(''));
+ join(name);prompt('Share this link to invite people. You are the owner and can remove people from the online list:',location.href)};
+$('menu').onclick=()=>$('side').classList.toggle('open');
+$('q').oninput=loadRooms;
+async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';
+ if(!l.length){$('list').textContent='No active rooms yet. Start one.';return}
+ l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
+if(nick&&location.hash.length>1)$('gate').querySelector('p').textContent='Welcome back. Confirm to continue.';
+</script></body></html>
