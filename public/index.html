@@ -7,19 +7,19 @@
   <meta name="description" content="Register or enter instantly. Create free private chat rooms, add global friends, and pick cool profile avatars.">
   <link rel="stylesheet" href="/style.css">
   <style>
-    .auth-container { max-width: 400px; margin: 50px auto; padding: 25px; border: 1px solid #ddd; border-radius: 8px; background: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
-    .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-    .tab-btn { flex: 1; padding: 10px; cursor: pointer; border: none; background: #f0f0f0; border-radius: 4px; font-weight: bold; }
-    .tab-btn.active { background: #007bff; color: black; }
-    .form-group { margin-bottom: 15px; }
-    .form-group label { display: block; margin-bottom: 5px; font-size: 14px; }
-    .form-group input, .form-group select { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+    .auth-container { max-width: 400px; margin: 50px auto; padding: 25px; border: 1px solid #444; border-radius: 8px; background: #222; box-shadow: 0 4px 10px rgba(0,0,0,0.3); color: #fff; }
+    .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #444; padding-bottom: 10px; }
+    .tab-btn { flex: 1; padding: 10px; cursor: pointer; border: none; background: #444; color: #bbb; border-radius: 4px; font-weight: bold; }
+    .tab-btn.active { background: #007bff; color: white; }
+    .form-group { margin-bottom: 15px; text-align: left; }
+    .form-group label { display: block; margin-bottom: 5px; font-size: 14px; color: #fff; font-weight: bold; }
+    .form-group input, .form-group select { width: 100%; padding: 10px; box-sizing: border-box; border: 2px solid #555; border-radius: 4px; background: #fff; color: #000; font-size: 15px; font-weight: 500; }
     .avatar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 5px; }
     .avatar-option { font-size: 24px; text-align: center; cursor: pointer; padding: 5px; border: 2px solid transparent; border-radius: 4px; }
-    .avatar-option.selected { border-color: #007bff; background: #e6f2ff; }
+    .avatar-option.selected { border-color: #007bff; background: #444; }
     .submit-btn { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
     .submit-btn:hover { background: #218838; }
-    .guest-link { display: block; text-align: center; margin-top: 15px; color: #666; text-decoration: none; font-size: 14px; }
+    .guest-link { display: block; text-align: center; margin-top: 15px; color: #aaa; text-decoration: none; font-size: 14px; }
   </style>
 </head>
 <body>
