@@ -57,7 +57,7 @@ http.createServer(async (req, res) => {
       try {
         const m = JSON.parse(body);
         const username = String(m.username || '').trim().toLowerCase();
-        if (!/^[a-z0-9_]{3,15}\$/.test(username)) return res.end(JSON.stringify({ error: 'Username alphanumeric 3-15 chars only' }));
+        if (!/^[a-zA-Z0-9_]{3,15}$/.test(username)) return res.end(JSON.stringify({ error: 'Username alphanumeric 3-15 chars only' }));
         if (!m.password || m.password.length < 6) return res.end(JSON.stringify({ error: 'Password min 6 chars long' }));
 
         if (!database) return res.end(JSON.stringify({ error: 'Database loading, try again' }));
