@@ -5,40 +5,107 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JenChat - Secure Chat & Social Portal</title>
   <meta name="description" content="Register or enter instantly. Create free private chat rooms, add global friends, and pick cool profile avatars.">
-  <link rel="stylesheet" href="/style.css">
   <style>
-    .auth-container { max-width: 400px; margin: 50px auto; padding: 25px; border: 1px solid #444; border-radius: 8px; background: #222; box-shadow: 0 4px 10px rgba(0,0,0,0.3); color: #fff; }
-    .tabs { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid #444; padding-bottom: 10px; }
-    .tab-btn { flex: 1; padding: 10px; cursor: pointer; border: none; background: #444; color: #bbb; border-radius: 4px; font-weight: bold; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1e1e24; color: #f5f5f5; line-height: 1.6; }
+    
+    header { text-align: center; padding: 40px 20px; background: #141419; border-bottom: 1px solid #2d2d35; }
+    header h1 { font-size: 2.5rem; color: #fff; margin-bottom: 10px; }
+    header p { color: #ffcc00; font-size: 1.1rem; }
+
+    /* AUTH PANEL CONTAINER STYLING */
+    .auth-section { max-width: 450px; margin: 40px auto; padding: 30px; border: 1px solid #444; border-radius: 12px; background: #25252d; box-shadow: 0 8px 24px rgba(0,0,0,0.3); color: #fff; }
+    .tabs { display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 1px solid #3a3a45; padding-bottom: 12px; }
+    .tab-btn { flex: 1; padding: 12px; cursor: pointer; border: none; background: #3a3a45; color: #bbb; border-radius: 6px; font-weight: bold; font-size: 14px; transition: background 0.2s; }
     .tab-btn.active { background: #007bff; color: white; }
-    .form-group { margin-bottom: 15px; text-align: left; }
-    .form-group label { display: block; margin-bottom: 5px; font-size: 14px; color: #fff; font-weight: bold; }
-    .form-group input, .form-group select { width: 100%; padding: 10px; box-sizing: border-box; border: 2px solid #555; border-radius: 4px; background: #fff; color: #000; font-size: 15px; font-weight: 500; }
-    .avatar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 5px; }
-    .avatar-option { font-size: 24px; text-align: center; cursor: pointer; padding: 5px; border: 2px solid transparent; border-radius: 4px; }
-    .avatar-option.selected { border-color: #007bff; background: #444; }
-    .submit-btn { width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
+    .form-group { margin-bottom: 20px; text-align: left; }
+    .form-group label { display: block; margin-bottom: 8px; font-size: 14px; color: #ddd; font-weight: 500; }
+    .form-group input { width: 100%; padding: 12px; box-sizing: border-box; border: 2px solid #3a3a45; border-radius: 6px; background: #fff; color: #000; font-size: 15px; outline: none; }
+    .form-group input:focus { border-color: #007bff; }
+    .avatar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 8px; }
+    .avatar-option { font-size: 26px; text-align: center; cursor: pointer; padding: 6px; border: 2px solid transparent; border-radius: 6px; transition: background 0.2s; }
+    .avatar-option:hover { background: #3a3a45; }
+    .avatar-option.selected { border-color: #007bff; background: #1e1e24; }
+    .submit-btn { width: 100%; padding: 14px; background: #28a745; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold; margin-top: 10px; transition: background 0.2s; }
     .submit-btn:hover { background: #218838; }
-    .guest-link { display: block; text-align: center; margin-top: 15px; color: #aaa; text-decoration: none; font-size: 14px; }
+
+    /* COMPREHENSIVE MARKETING SECTIONS LAYOUT */
+    .landing-content { max-width: 900px; margin: 0 auto; padding: 40px 20px; display: flex; flex-direction: column; gap: 50px; }
+    .info-card { background: #141419; border: 1px solid #2d2d35; border-radius: 12px; padding: 30px; }
+    .info-card h2 { font-size: 1.8rem; margin-bottom: 15px; color: #ffcc00; border-bottom: 2px solid #2d2d35; padding-bottom: 10px; }
+    .info-card p { color: #ccc; margin-bottom: 15px; font-size: 15px; }
+    
+    .features-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-top: 20px; }
+    .feature-item { background: #25252d; padding: 20px; border-radius: 8px; border: 1px solid #3a3a45; }
+    .feature-item h4 { color: #fff; margin-bottom: 8px; font-size: 16px; }
+    .feature-item p { font-size: 13px; color: #aaa; margin: 0; }
+
+    footer { text-align: center; padding: 30px 20px; background: #141419; border-top: 1px solid #2d2d35; margin-top: 50px; font-size: 14px; color: #888; }
+    footer a { color: #ffcc00; text-decoration: none; margin: 0 10px; }
+    footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
 
-  <header style="text-align: center; margin-top: 30px;">
+  <!-- Top Hero Display Head -->
+  <header>
     <h1>Welcome to JenChat ✨</h1>
-    <p>Connect securely, pick your avatar, and add friends globally</p>
+    <p>Connect securely, build communities, pick unique avatars, and chat with friends globally</p>
   </header>
 
-  <div class="auth-container">
+  <!-- AUTH PORTAL TAB WINDOW -->
+  <div class="auth-section">
     <div class="tabs">
-      <button class="tab-btn active" id="tab-login" onclick="switchTab('login')">Login</button>
-      <button class="tab-btn" id="tab-register" onclick="switchTab('register')">Register</button>
+      <button class="tab-btn active" id="tab-login" onclick="switchTab('login')">Sign In</button>
+      <button class="tab-btn" id="tab-register" onclick="switchTab('register')">Create Account</button>
+    </div>
+    <div id="auth-form-box"></div>
+  </div>
+
+  <!-- HOMEPAGE DESCRIPTION INFO BLOCKS -->
+  <div class="landing-content">
+    
+    <!-- About Section Content -->
+    <div class="info-card" id="about">
+      <h2>About JenChat</h2>
+      <p>JenChat is a modern web communication hub designed to bridge anonymity with powerful community networks. We believe in providing fast, fluid text spaces where users can connect instantly without complex administrative setup barriers.</p>
+      <div class="features-grid">
+        <div class="feature-item">
+          <h4>Dynamic Groups Matrix</h4>
+          <p>Instantly establish public channel configurations or encrypted temporary environments within seconds.</p>
+        </div>
+        <div class="feature-item">
+          <h4>Permanent Friends Node</h4>
+          <p>Secure database systems powered by cloud infrastructure allow tracking friends and managing peer streams.</p>
+        </div>
+        <div class="feature-item">
+          <h4>Custom Visual Identity</h4>
+          <p>Express yourself through distinctive cryptographic emoji avatars associated with your account hash handles.</p>
+        </div>
+      </div>
     </div>
 
-    <div id="auth-form-box">
-      <!-- Dynamic Form Content injected here -->
+    <!-- Contact Details Segment -->
+    <div class="info-card" id="contact">
+      <h2>Contact Developer Support</h2>
+      <p>Having trouble connecting to the application grid database matrix or experiencing server latency issues? Reach out directly to our administrator hub configuration line:</p>
+      <p style="background: #25252d; padding: 12px; border-radius: 6px; border-left: 4px solid #007bff; font-family: monospace; font-size: 14px;">
+        📧 Email Console: administrator@://onrender.com<br>
+        🌐 Git Network Node: ://github.com
+      </p>
     </div>
+
   </div>
+
+  <!-- Shared Platform System Footer -->
+  <footer>
+    <p>© 2026 JenChat Grid Core Engine. All rights securely reserved.</p>
+    <p style="margin-top: 8px;">
+      <a href="#about">About Architecture</a> | 
+      <a href="/legal">Privacy & Terms Policy</a> | 
+      <a href="#contact">Contact Support Node</a>
+    </p>
+  </footer>
 
   <script>
     let activeTab = 'login';
@@ -110,13 +177,10 @@
         const data = await res.json();
         
         if (data.ok) {
-          // Store basic profile credentials locally
           localStorage.setItem('chat_token', data.token);
           localStorage.setItem('chat_nick', data.username);
           localStorage.setItem('chat_avatar', data.avatar);
-          
-          // Redirect to dynamic lobby or default global room
-          window.location.href = `/chat?room=global&nick=${encodeURIComponent(data.username)}&avatar=${encodeURIComponent(data.avatar)}`;
+          window.location.href = `/chat?room=global`;
         } else {
           alert(data.error || 'Authentication Failed!');
         }
@@ -125,7 +189,6 @@
       }
     }
 
-    // Load form initial call
     renderForm();
   </script>
 </body>
