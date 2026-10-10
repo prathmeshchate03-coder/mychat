@@ -157,6 +157,35 @@ http.createServer((req, res) => {
   // On Render the last X-Forwarded-For entry is the one added by Render's proxy = the real client.
   const ip = (req.headers['x-forwarded-for'] || '').split(',').pop().trim() || req.socket.remoteAddress;
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  // ----- Dynamic Blog Posts Handler -----
+  if (url.pathname.startsWith('/blog/')) {
+    const seoManager = require('./seo');
+    const slug = url.pathname.split('/').pop();
+    const post = seoManager.BLOG_POSTS[slug];
+    
+    if (post) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          ${seoManager.getMetaTags(post)}
+          <link rel="stylesheet" href="/style.css">
+        </head>
+        <body>
+          <header style="padding:20px; background:#f4f4f9; text-align:center;">
+            <a href="/">← Back to Home</a>
+          </header>
+          <main style="max-width:800px; margin:40px auto; padding:0 20px; font-family:sans-serif; line-height:1.6;">
+            ${post.content}
+          </main>
+        </body>
+        </html>
+      `;
+      return res.end(htmlContent);
+    }
+  }
 
   const file = PAGES[url.pathname];
   if (file && req.method === 'GET') {
