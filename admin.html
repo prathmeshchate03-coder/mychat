@@ -1,0 +1,65 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow"><title>JenChat admin</title><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css">
+<style>
+.mut{color:var(--mut)}.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+.card .txt{margin:6px 0;overflow-wrap:anywhere;background:#26262c;padding:8px 10px;border-radius:8px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}.row button{padding:6px 12px;font-size:14px}
+.pill{display:inline-block;background:#26262c;border:1px solid var(--line);border-radius:99px;padding:2px 10px;font-size:13px}
+.bar{display:flex;gap:8px;margin:8px 0}.bar input{flex:1}
+#login{max-width:380px;margin:12vh auto}#err{color:#ff6b6b;min-height:1.5em}
+h2 small{font-size:14px;color:var(--mut);font-weight:400}
+</style></head><body><div class="wrap">
+<div id="login"><a class="brand" href="/"><img src="/logo.svg" alt="">Jen<span>Chat</span> admin</a><br>
+<input type="text" id="tok" placeholder="Admin token" autocomplete="off" aria-label="Admin token"><br><br><button id="go">Log in</button><p id="err"></p></div>
+<div id="dash" hidden>
+<header class="top"><a class="brand" href="/"><img src="/logo.svg" alt="">Jen<span>Chat</span> admin</a><button class="ghost" id="out">Log out</button></header>
+<p id="store" class="mut"></p>
+<h2>Open reports <small id="rc"></small></h2><div id="reports"></div>
+<h2>Live rooms</h2><div id="live"></div>
+<h2>Closed rooms</h2><div id="closed"></div>
+<div class="bar"><input type="text" id="croom" placeholder="Close a room by name" maxlength="30"><button id="cbtn">Close room</button></div>
+<h2>Banned IPs</h2><div id="bans"></div>
+<div class="bar"><input type="text" id="bip" placeholder="Ban an IP manually" maxlength="45"><button id="bbtn">Ban 24h</button></div>
+</div></div>
+<script>
+const $=id=>document.getElementById(id);let tok=sessionStorage.getItem('tok')||'',timer;
+function h(tag,txt,cls){const e=document.createElement(tag);if(txt!=null&&txt!=='')e.textContent=txt;if(cls)e.className=cls;return e}
+function btn(label,fn,ghost){const b=h('button',label,ghost?'ghost':'');b.onclick=fn;return b}
+function logout(msg){clearInterval(timer);sessionStorage.removeItem('tok');tok='';$('dash').hidden=true;$('login').hidden=false;$('err').textContent=msg||''}
+async function call(path,body){
+ const r=await fetch(path,{method:body?'POST':'GET',headers:{'x-admin-token':tok,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+ if(r.status===401){logout('Wrong token');throw 0}
+ if(r.status===429){logout('Too many wrong attempts. Try again in 15 minutes.');throw 0}
+ if(r.status===503){logout('Admin is disabled: set ADMIN_TOKEN on the server.');throw 0}
+ return r}
+async function act(body){try{await call('/admin/api/action',body);load()}catch{}}
+async function load(){try{render(await (await call('/admin/api/state')).json())}catch{}}
+const time=t=>new Date(t).toLocaleString();
+function empty(box,text){box.append(h('p',text,'mut'))}
+function render(s){
+ $('store').textContent=(s.storage==='database'?'Storage: saved in database. Bans, closed rooms and reports survive restarts.'
+  :s.storage==='connecting'?'Storage: database configured but not reachable yet. Changes are kept and will be saved once it connects.'
+  :'Storage: memory only. Everything here is lost when the server restarts.')+(s.dbError?' Problem: '+s.dbError:'');
+ const R=$('reports');R.innerHTML='';const open=s.reports.filter(r=>r.status==='open');
+ $('rc').textContent='('+open.length+')';if(!open.length)empty(R,'No open reports.');
+ open.forEach(r=>{const c=h('div','','card'),top=h('div');
+  top.append(h('b','#'+r.room),h('span',' '+r.nick+' · '+r.count+' report'+(r.count>1?'s':'')+' · '+time(r.t),'mut'));
+  const banned=s.bans.some(b=>b.ip===r.ip),row=h('div','','row');
+  row.append(btn('Ban 24h',()=>act({a:'ban',rid:r.rid,hours:24})),btn('Ban forever',()=>act({a:'ban',rid:r.rid,hours:0})),
+   btn('Close room',()=>act({a:'close',rid:r.rid}),1),btn('Dismiss',()=>act({a:'dismiss',rid:r.rid}),1));
+  c.append(top,h('div',r.text,'txt'),h('div','IP '+r.ip+(banned?' (already banned)':''),'mut'),row);R.append(c)});
+ const L=$('live');L.innerHTML='';if(!s.live.length)empty(L,'No one online.');
+ s.live.forEach(x=>{const row=h('div','','row');row.append(h('span','#'+x.name+' · '+x.count+' online','pill'),btn('Close',()=>act({a:'close',room:x.name}),1));L.append(row)});
+ const C=$('closed');C.innerHTML='';if(!s.closed.length)empty(C,'None.');
+ s.closed.forEach(x=>{const row=h('div','','row');row.append(h('span','#'+x.name,'pill'),btn('Reopen',()=>act({a:'open',room:x.name}),1));C.append(row)});
+ const B=$('bans');B.innerHTML='';if(!s.bans.length)empty(B,'None.');
+ s.bans.forEach(x=>{const row=h('div','','row');
+  row.append(h('span',x.ip,'pill'),h('span',(x.until?'until '+time(x.until):'permanent')+(x.reason?' · '+x.reason:''),'mut'),btn('Unban',()=>act({a:'unban',ip:x.ip}),1));B.append(row)})}
+function start(){$('login').hidden=true;$('dash').hidden=false;$('err').textContent='';clearInterval(timer);timer=setInterval(load,5000);load()}
+$('go').onclick=()=>{tok=$('tok').value.trim();if(!tok)return;sessionStorage.setItem('tok',tok);start()};
+$('tok').onkeydown=e=>{if(e.key==='Enter')$('go').click()};
+$('out').onclick=()=>logout('');
+$('cbtn').onclick=()=>{const n=$('croom').value.trim().toLowerCase();if(n){act({a:'close',room:n});$('croom').value=''}};
+$('bbtn').onclick=()=>{const v=$('bip').value.trim();if(v){act({a:'ban',ip:v,hours:24,reason:'manual'});$('bip').value=''}};
+if(tok)start();
+</script></body></html>

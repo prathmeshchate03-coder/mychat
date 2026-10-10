@@ -57,13 +57,21 @@ function readBody(req, max, cb) {
 // ---------- persistence (optional) ----------
 // Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to keep bans, closed rooms and reports across restarts.
 // Without them everything stays in memory exactly as before. Chat messages are never stored.
-const DB_URL = process.env.UPSTASH_REDIS_REST_URL || '', DB_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+// Forgive common copy-paste mistakes: spaces, quotes, "Bearer " prefix, missing https://
+const envClean = s => String(s || '').trim().replace(/^["']+|["']+$/g, '').trim();
+let DB_URL = envClean(process.env.UPSTASH_REDIS_REST_URL), DB_TOKEN = envClean(process.env.UPSTASH_REDIS_REST_TOKEN).replace(/^Bearer\s+/i, '');
+if (DB_URL && !/^[a-z]+:\/\//i.test(DB_URL)) DB_URL = 'https://' + DB_URL;
 const REPORT_KEEP = 14 * 86400000, SAVE_DELAY = 10000;
-let dbReady = !DB_URL, saveTimer = null;
+let dbReady = !DB_URL, saveTimer = null, dbError = '';
 const dirty = new Set();
 async function dbCmd(cmd) {
-  const r = await fetch(DB_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + DB_TOKEN, 'Content-Type': 'application/json' },
-    body: JSON.stringify(cmd), signal: AbortSignal.timeout(5000) });
+  if (/^rediss?:/i.test(DB_URL)) throw new Error('wrong URL type: use the REST URL that starts with https://, not the redis:// one');
+  if (!DB_TOKEN) throw new Error('UPSTASH_REDIS_REST_TOKEN is empty or missing');
+  let r;
+  try {
+    r = await fetch(DB_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + DB_TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify(cmd), signal: AbortSignal.timeout(5000) });
+  } catch (e) { throw new Error('cannot connect to the database URL (' + ((e.cause && (e.cause.code || e.cause.message)) || e.name + ': ' + e.message) + ')'); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
   return j.result;
@@ -75,8 +83,8 @@ async function flush() {
   if (!dbReady) return;   // never write before the old data was read, or we would overwrite it with an empty list
   for (const k of [...dirty]) {
     dirty.delete(k);      // removed before the await, so a change made during the save marks it dirty again
-    try { await dbCmd(['SET', 'jc:' + k, JSON.stringify(dump[k]())]); }
-    catch (e) { console.error('DB SAVE FAILED', k, e.message); dirty.add(k); if (!saveTimer) saveTimer = setTimeout(flush, 30000); }
+    try { await dbCmd(['SET', 'jc:' + k, JSON.stringify(dump[k]())]); dbError = ''; }
+    catch (e) { dbError = 'save failed: ' + e.message; console.error('DB SAVE FAILED', k, e.message); dirty.add(k); if (!saveTimer) saveTimer = setTimeout(flush, 30000); }
   }
 }
 // Merge what the database has into memory. Anything already in memory wins.
@@ -96,10 +104,10 @@ async function dbLoad() {
       const raw = await dbCmd(['GET', 'jc:' + k]);
       if (raw) { const d = JSON.parse(raw); if (Array.isArray(d)) mergeLoaded(k, d); }
     }
-    dbReady = true;
+    dbReady = true; dbError = '';
     console.log(`DB loaded: ${bans.size} bans, ${closed.size} closed rooms, ${reports.length} reports`);
     if (dirty.size) flush();
-  } catch (e) { console.error('DB LOAD FAILED, retrying in 30s:', e.message); setTimeout(dbLoad, 30000); }
+  } catch (e) { dbError = e.message; console.error('DB LOAD FAILED, retrying in 30s:', e.message); setTimeout(dbLoad, 30000); }
 }
 if (DB_URL) dbLoad();
 async function shutdown() {   // Render sends SIGTERM on every deploy: save pending changes first
@@ -169,6 +177,7 @@ http.createServer((req, res) => {
       live: [...rooms].filter(([, r]) => r.clients.size).map(([name, r]) => ({ name, count: r.clients.size }))
         .sort((a, b) => b.count - a.count),
       storage: !DB_URL ? 'memory' : dbReady ? 'database' : 'connecting',
+      dbError: dbError.slice(0, 200),   // reason text only, never the URL or token
     });
   }
   if (url.pathname === '/admin/api/action' && req.method === 'POST') {
