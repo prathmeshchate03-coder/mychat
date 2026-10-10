@@ -115,7 +115,7 @@ http.createServer(async (req, res) => {
         const target = await database.collection('users').findOne({ username: friendName });
         if (!target) return res.end(JSON.stringify({ error: 'User does not exist' }));
 
-        await database.collection('users').updateOne({ username: myName }, { \$addToSet: { friends: friendName } });
+        await database.collection('users').updateOne({ username: myName }, { $addToSet: { friends: friendName } });
         return res.end(JSON.stringify({ ok: true }));
       } catch { res.writeHead(400); res.end(); }
     });
