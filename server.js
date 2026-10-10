@@ -10,8 +10,8 @@ const sent = new Map();       // msg id -> { ip, room, nick, text, t }  last 300
 const reports = [];           // newest first, max 200
 const adminFails = new Map(); // ip -> { n, t }
 const BAD = [];   // add words to filter, e.g. ['word1', 'word2']
-const PAGES = { '/': 'index.html', '/chat': 'chat.html', '/legal': 'legal.html', '/admin': 'admin.html', '/style.css': 'style.css', '/logo.svg': 'logo.svg' };
-const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.svg': 'image/svg+xml' };
+const PAGES = { '/': 'index.html', '/chat': 'chat.html', '/legal': 'legal.html', '/admin': 'admin.html', '/style.css': 'style.css', '/logo.svg': 'logo.svg', '/sitemap.xml': 'sitemap.xml', '/robots.txt': 'robots.txt' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.svg': 'image/svg+xml', '.xml': 'application/xml', '.txt': 'text/plain' };
 const okRoom = s => /^[a-z0-9-]{1,30}$/.test(s);
 const okIp = s => /^[0-9a-fA-F:.]{3,45}$/.test(s);
 const clean = (s, n) => String(s || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
