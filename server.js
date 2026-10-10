@@ -17,9 +17,26 @@ const okIp = s => /^[0-9a-fA-F:.]{3,45}$/.test(s);
 const clean = (s, n) => String(s || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
 const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
+const okTok = s => /^[a-zA-Z0-9]{16,64}$/.test(s);
+const typingAt = new Map();   // ip -> last typing event time
+
 function room(name) {
-  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [] });
+  // ownerTok: sha256 of the creator's secret (private rooms only). kicked: ip -> expiry time.
+  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', kicked: new Map() });
   return rooms.get(name);
+}
+// Join/leave notice that also carries the current member list (no IPs, only public info).
+function sys(name, text) {
+  const r = room(name);
+  broadcast(name, { system: true, text, count: r.clients.size,
+    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, nick: c.nick, owner: !!c.owner })) });
+}
+function isKicked(r, ip) {
+  const t = r.kicked.get(ip);
+  if (!t) return false;
+  if (t < Date.now()) { r.kicked.delete(ip); return false; }
+  return true;
 }
 function broadcast(name, msg) {
   const r = room(name);
@@ -136,18 +153,23 @@ http.createServer((req, res) => {
     if (!okRoom(name) || !nick || (conns.get(ip) || 0) >= 5) { res.writeHead(400); return res.end(); }
     if (isBanned(ip)) { res.writeHead(403); return res.end('banned'); }
     if (closed.has(name)) { res.writeHead(403); return res.end('closed'); }
+    const r = room(name), otok = String(url.searchParams.get('otok') || '');
+    // The first person to open a private room with a valid secret becomes its owner.
+    if (name.startsWith('p-') && okTok(otok) && !r.ownerTok) r.ownerTok = sha(otok);
+    const owner = !!r.ownerTok && okTok(otok) && sha(otok) === r.ownerTok;
+    if (!owner && isKicked(r, ip)) { res.writeHead(403); return res.end('kicked'); }
     conns.set(ip, (conns.get(ip) || 0) + 1);
-    res.ip = ip;
+    res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner;
+    res.uid = clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    const r = room(name);
-    res.write(`data: ${JSON.stringify({ history: r.history })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner } })}\n\n`);
     r.clients.add(res);
-    broadcast(name, { system: true, text: `${nick} joined`, count: r.clients.size });
+    sys(name, `${nick} joined`);
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
     req.on('close', () => {
       clearInterval(ping); r.clients.delete(res);
       conns.set(ip, Math.max(0, (conns.get(ip) || 1) - 1));
-      broadcast(name, { system: true, text: `${nick} left`, count: r.clients.size });
+      sys(name, `${nick} left`);
       if (!r.clients.size) setTimeout(() => { if (!r.clients.size) rooms.delete(name); }, 600000);
     });
     return;
@@ -159,12 +181,44 @@ http.createServer((req, res) => {
         let text = clean(m.text, 500); const nick = clean(m.nick, 20);
         if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
         if (isBanned(ip) || closed.has(name)) { res.writeHead(403); return res.end(); }
+        const r = rooms.get(name);
+        if (r && isKicked(r, ip) && !(r.ownerTok && okTok(String(m.otok || '')) && sha(String(m.otok)) === r.ownerTok)) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
-        const msg = { id: crypto.randomUUID().slice(0, 8), nick, text, t: Date.now() };
+        const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
         sent.set(msg.id, { ip, room: name, nick, text, t: msg.t });   // ip stays server-side, never broadcast
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
+        res.writeHead(204); res.end();
+      } catch { res.writeHead(400); res.end(); }
+    });
+  }
+  if (url.pathname === '/typing' && req.method === 'POST') {
+    return readBody(req, 500, body => {
+      res.writeHead(204); res.end();
+      const now = Date.now();
+      if (isBanned(ip) || now - (typingAt.get(ip) || 0) < 1500) return;
+      try {
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), nick = clean(m.nick, 20);
+        const r = rooms.get(name);
+        if (!r || !nick || closed.has(name) || ![...r.clients].some(c => c.ip === ip)) return;   // must be in the room
+        typingAt.set(ip, now);
+        const data = `data: ${JSON.stringify({ typing: true, nick, uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, '') })}\n\n`;
+        r.clients.forEach(c => c.write(data));
+      } catch {}
+    });
+  }
+  // Private room owner removes someone: they are disconnected and blocked from this room for 1 hour.
+  if (url.pathname === '/kick' && req.method === 'POST') {
+    return readBody(req, 500, body => {
+      try {
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name);
+        if (limited(ip)) { res.writeHead(429); return res.end(); }
+        if (!r || !r.ownerTok || !okTok(String(m.otok || '')) || sha(String(m.otok)) !== r.ownerTok) { res.writeHead(403); return res.end(); }
+        const target = [...r.clients].find(c => c.cid === String(m.cid || ''));
+        if (!target || target.owner) { res.writeHead(404); return res.end(); }
+        r.kicked.set(target.ip, Date.now() + 3600000);
+        kick((c, n) => n === name && c.ip === target.ip && !c.owner, 'You were removed from this room by the owner.');
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
     });
@@ -191,5 +245,6 @@ setInterval(() => {
   const n = Date.now();
   for (const [k, a] of hits) if (!a.some(t => n - t < 10000)) hits.delete(k);
   for (const [k, f] of adminFails) if (n - f.t > 900000) adminFails.delete(k);
+  for (const [k, t] of typingAt) if (n - t > 10000) typingAt.delete(k);
 }, 60000);
 process.on('uncaughtException', e => console.error('ERR', e));

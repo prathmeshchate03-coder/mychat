@@ -9,34 +9,103 @@
 <b>Topics</b><div class="chips" id="chips"></div>
 <input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
 <button id="priv" class="ghost">Create private room</button></aside>
-<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><span id="cnt" style="color:var(--mut)"></span></div>
+<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button></div>
+<div id="users" hidden></div>
 <div id="msgs" aria-live="polite"></div>
-<div id="form"><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<div id="typing" aria-live="polite"></div>
+<div id="emojis" hidden></div>
+<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
 <script>
-const $=id=>document.getElementById(id);let nick=localStorage.nick,room,es;
+const $=id=>document.getElementById(id);
+let nick=localStorage.nick,room,es,otok='',me={id:'',owner:false},users=[],lastTyping=0;
+const typers=new Map();
+// uid: a random id kept in this browser. It lets people block someone even if the nickname changes.
+let uid=localStorage.uid;if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
+let blocked={};try{blocked=JSON.parse(localStorage.blocked||'{}')||{}}catch{}
+const saveBlocked=()=>{try{localStorage.blocked=JSON.stringify(blocked)}catch{}};
 const slug=s=>s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30);
+function el(tag,txt,cls){const e=document.createElement(tag);if(txt!=null&&txt!=='')e.textContent=txt;if(cls)e.className=cls;return e}
 $('nick').value=nick||'Guest'+Math.floor(Math.random()*9000+1000);
 ['music','gaming','anime','movies','news','english','food','friends'].forEach(t=>{const b=document.createElement('button');b.textContent=t;b.onclick=()=>join(t);$('chips').append(b)});
 function start(){$('gate').hidden=true;$('app').hidden=false;join(location.hash.slice(1)||'lobby');loadRooms();setInterval(loadRooms,5000)}
 $('go').onclick=()=>{if(!$('age').checked)return alert('Please confirm you are 18 or older');
  nick=$('nick').value.trim().slice(0,20)||'Guest';localStorage.nick=nick;start()};
-function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';$('cnt').textContent='';
- if(es)es.close();es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick));
- es.onmessage=e=>{const d=JSON.parse(e.data);if(d.history){$('msgs').innerHTML='';d.history.forEach(add)}else add(d)};
- es.onerror=()=>{if(es.readyState===2)notice('Cannot join this room. You may be banned, the room may be closed, or you have too many tabs open.')};
+
+function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';
+ users=[];me={id:'',owner:false};typers.clear();showTyping();$('cnt').hidden=true;closePanels();
+ otok=localStorage.getItem('otok:'+name)||'';
+ if(es)es.close();
+ es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick)+'&uid='+uid+(otok?'&otok='+otok:''));
+ es.onmessage=e=>{const d=JSON.parse(e.data);
+  if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);renderUsers()}
+  else if(d.typing)onTyping(d);
+  else add(d)};
+ es.onerror=()=>{if(es.readyState===2)notice('Cannot join this room. You may be banned or removed, the room may be closed, or you have too many tabs open.')};
  $('side').classList.remove('open')}
-function notice(t){const d=document.createElement('div');d.className='sys';d.textContent=t;$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
-function add(m){const box=$('msgs'),el=document.createElement('div');
- if(m.system){el.className='sys';el.textContent=m.text;if(m.count!==undefined)$('cnt').textContent=' - '+m.count+' online'}
- else{el.className='m'+(m.nick===nick?' me':'');const b=document.createElement('b');b.textContent=m.nick;
-  const rp=document.createElement('a');rp.textContent='report';rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id,nick:m.nick,text:m.text})});rp.textContent='reported'};
-  const t=document.createElement('div');t.textContent=m.text;el.append(b,rp,t)}
- box.append(el);box.scrollTop=box.scrollHeight}
-function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';
- fetch('/send',{method:'POST',body:JSON.stringify({room,nick,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned or room closed).')})}
+function notice(t){const d=el('div',t,'sys');$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
+
+function add(m){const box=$('msgs');
+ if(m.system){const d=el('div',m.text,'sys');
+  if(m.users){users=m.users;renderUsers()}
+  box.append(d);box.scrollTop=box.scrollHeight;return}
+ if(m.uid&&blocked[m.uid])return;
+ const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
+ const b=el('b',m.nick);d.append(b);
+ if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
+ const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
+ rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
+ d.append(rp,el('div',m.text));box.append(d);box.scrollTop=box.scrollHeight}
+
+// ---- users panel, block, kick ----
+function renderUsers(){
+ const c=$('cnt');c.hidden=!users.length;c.textContent=users.length+' online';
+ const p=$('users');p.innerHTML='';
+ users.forEach(u=>{const row=el('div','','urow');
+  row.append(el('span',u.nick+(u.id===me.id?' (you)':''),'un'));
+  if(u.owner)row.append(el('span','owner','badge'));
+  if(u.id!==me.id){
+   if(u.uid&&u.uid!==uid){const bb=el('button',blocked[u.uid]?'Unblock':'Block','ghost sm');bb.onclick=()=>blocked[u.uid]?unblock(u.uid):block(u.uid,u.nick);row.append(bb)}
+   if(me.owner&&!u.owner){const kb=el('button','Kick','ghost sm');kb.onclick=()=>kickUser(u);row.append(kb)}}
+  p.append(row)});
+ const ids=Object.keys(blocked);
+ if(ids.length){p.append(el('div','Blocked','uh'));
+  ids.forEach(id=>{const row=el('div','','urow');row.append(el('span',blocked[id],'un'));const ub=el('button','Unblock','ghost sm');ub.onclick=()=>unblock(id);row.append(ub);p.append(row)})}}
+function block(id,name){if(Object.keys(blocked).length>=200)return notice('Block list is full.');
+ blocked[id]=name;saveBlocked();
+ document.querySelectorAll('#msgs .m').forEach(m=>{if(m.dataset.uid===id)m.remove()});
+ notice('Blocked '+name+'. You can undo it from the online list.');renderUsers()}
+function unblock(id){delete blocked[id];saveBlocked();renderUsers();notice('Unblocked. Their new messages will show again.')}
+function kickUser(u){if(!confirm('Remove '+u.nick+' from this room?'))return;
+ fetch('/kick',{method:'POST',body:JSON.stringify({room,otok,cid:u.id})}).then(r=>{if(r.status===204)notice(u.nick+' was removed.');else notice('Could not remove '+u.nick+'.')})}
+function closePanels(){$('users').hidden=true;$('emojis').hidden=true;$('cnt').setAttribute('aria-expanded','false');$('emo').setAttribute('aria-expanded','false')}
+$('cnt').onclick=()=>{const open=$('users').hidden;closePanels();$('users').hidden=!open;$('cnt').setAttribute('aria-expanded',String(open))};
+
+// ---- typing indicator ----
+function onTyping(d){if(d.uid===uid||(d.uid&&blocked[d.uid]))return;
+ clearTimeout(typers.get(d.nick));typers.set(d.nick,setTimeout(()=>{typers.delete(d.nick);showTyping()},3500));showTyping()}
+function showTyping(){const n=[...typers.keys()];
+ $('typing').textContent=!n.length?'':n.length===1?n[0]+' is typing...':n.length===2?n[0]+' and '+n[1]+' are typing...':'Several people are typing...'}
+$('text').oninput=()=>{const now=Date.now();
+ if($('text').value&&now-lastTyping>2500){lastTyping=now;fetch('/typing',{method:'POST',body:JSON.stringify({room,nick,uid})}).catch(()=>{})}};
+
+// ---- emoji ----
+'😀 😂 🤣 😊 😍 😘 😎 🤔 😅 😭 😡 😴 🙄 😉 🥳 😇 👍 👎 👏 🙏 💪 🔥 ❤️ 💔 ✨ 🎉 🎵 🎮 🍕 ☕ 🌙 ⭐'.split(' ').forEach(e=>{
+ const b=el('button',e,'ghost');b.setAttribute('aria-label','Insert '+e);
+ b.onclick=()=>{const t=$('text'),s=t.selectionStart??t.value.length,x=t.selectionEnd??s;
+  if(t.value.length-(x-s)+e.length>t.maxLength)return;
+  t.value=t.value.slice(0,s)+e+t.value.slice(x);t.focus();t.selectionStart=t.selectionEnd=s+e.length};
+ $('emojis').append(b)});
+$('emo').onclick=()=>{const open=$('emojis').hidden;closePanels();$('emojis').hidden=!open;$('emo').setAttribute('aria-expanded',String(open))};
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
+
+function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned, removed or room closed).')})}
 $('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
 $('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
-$('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6));join('p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join(''));prompt('Share this link to invite people:',location.href)};
+$('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6)),name='p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
+ // secret that proves ownership of this private room; stays in this browser only
+ localStorage.setItem('otok:'+name,[...crypto.getRandomValues(new Uint8Array(12))].map(x=>x.toString(16).padStart(2,'0')).join(''));
+ join(name);prompt('Share this link to invite people. You are the owner and can remove people from the online list:',location.href)};
 $('menu').onclick=()=>$('side').classList.toggle('open');
 $('q').oninput=loadRooms;
 async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';
