@@ -65,3 +65,20 @@ nav[aria-label=Main]{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:2p
 .doc article h2{font-size:22px;margin:32px 0 8px}.doc article ul,.doc article ol{padding-left:22px}.doc article li{margin:4px 0}
 .guides{padding-left:20px}.guides li{margin:6px 0}
 .crumbs a{margin:0}
+/* private messages */
+#dmbtn{padding:4px 12px;font-size:13px;font-weight:500;color:var(--mut)}#head #dmbtn{margin-left:auto}#head #cnt{margin-left:0}
+#dmbadge{display:inline-block;background:var(--y);color:var(--ink);border-radius:99px;padding:0 7px;margin-left:6px;font-size:12px;font-weight:700}
+#dms{position:absolute;top:50px;right:8px;z-index:5;width:min(360px,calc(100% - 16px));height:min(480px,70%);display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px #0008}
+#dms[hidden]{display:none}
+.dmhead{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line)}.dmhead b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dmbody{flex:1;overflow:auto;padding:8px 10px}.dmbody .m{max-width:100%}.dmbody p{margin:8px 0;font-size:14px}
+.dmrow{display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;cursor:pointer}.dmrow:hover,.dmrow:focus-visible{background:#34343c;outline:0}
+.dminfo{flex:1;min-width:0}.dminfo b{display:block}.dmlast{display:block;color:var(--mut);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dot{background:var(--y);color:var(--ink);border-radius:99px;min-width:20px;text-align:center;font-size:12px;font-weight:700;padding:0 6px}
+.dmreq{display:flex;align-items:center;gap:10px;margin:8px 0;padding:8px 10px;border:1px solid var(--y);border-radius:10px;font-size:14px}.dmreq span{flex:1}
+.dmerr{color:#ff8a8a}
+.dmform{display:flex;gap:8px;padding:8px 10px;border-top:1px solid var(--line)}.dmform input{flex:1;min-width:0}
+/* small phones: keep the room header on one line */
+#head{min-width:0}#rname{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#head button{white-space:nowrap;flex:none}
+@media(max-width:400px){#head{gap:6px;padding:10px 8px}#head #dmbtn,#head #cnt{padding:4px 8px;font-size:12px}#menu{padding:8px 12px}}

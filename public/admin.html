@@ -43,10 +43,11 @@ function render(s){
  const R=$('reports');R.innerHTML='';const open=s.reports.filter(r=>r.status==='open');
  $('rc').textContent='('+open.length+')';if(!open.length)empty(R,'No open reports.');
  open.forEach(r=>{const c=h('div','','card'),top=h('div');
-  top.append(h('b','#'+r.room),h('span',' '+r.nick+' · '+r.count+' report'+(r.count>1?'s':'')+' · '+time(r.t),'mut'));
+  top.append(h('b',r.dm?'Private message':'#'+r.room),h('span',' '+r.nick+' · '+r.count+' report'+(r.count>1?'s':'')+' · '+time(r.t),'mut'));
   const banned=s.bans.some(b=>b.ip===r.ip),row=h('div','','row');
-  row.append(btn('Ban 24h',()=>act({a:'ban',rid:r.rid,hours:24})),btn('Ban forever',()=>act({a:'ban',rid:r.rid,hours:0})),
-   btn('Close room',()=>act({a:'close',rid:r.rid}),1),btn('Dismiss',()=>act({a:'dismiss',rid:r.rid}),1));
+  row.append(btn('Ban 24h',()=>act({a:'ban',rid:r.rid,hours:24})),btn('Ban forever',()=>act({a:'ban',rid:r.rid,hours:0})));
+  if(!r.dm)row.append(btn('Close room',()=>act({a:'close',rid:r.rid}),1));
+  row.append(btn('Dismiss',()=>act({a:'dismiss',rid:r.rid}),1));
   c.append(top,h('div',r.text,'txt'),h('div','IP '+r.ip+(banned?' (already banned)':''),'mut'),row);R.append(c)});
  const L=$('live');L.innerHTML='';if(!s.live.length)empty(L,'No one online.');
  s.live.forEach(x=>{const row=h('div','','row');row.append(h('span','#'+x.name+' · '+x.count+' online','pill'),btn('Close',()=>act({a:'close',room:x.name}),1));L.append(row)});

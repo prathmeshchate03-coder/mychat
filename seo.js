@@ -150,7 +150,7 @@ function sitemap(base) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
     urls.map(([p, d]) => `<url><loc>${xml(base + p)}</loc>${d ? `<lastmod>${d}</lastmod>` : ''}</url>`).join('\n') + `\n</urlset>\n`;
 }
-const robots = base => `User-agent: *\nAllow: /\nDisallow: /events\nDisallow: /send\nDisallow: /typing\nDisallow: /kick\nDisallow: /report\nDisallow: /rooms\n\nSitemap: ${base}/sitemap.xml\n`;
+const robots = base => `User-agent: *\nAllow: /\nDisallow: /events\nDisallow: /send\nDisallow: /typing\nDisallow: /kick\nDisallow: /dm\nDisallow: /report\nDisallow: /rooms\n\nSitemap: ${base}/sitemap.xml\n`;
 
 // Extra <head> tags for the static pages (index.html, legal.html). Everything else gets none.
 function headFor(file, base, html) {

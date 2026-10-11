@@ -22,6 +22,24 @@ const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const okTok = s => /^[a-zA-Z0-9]{16,64}$/.test(s);
 const typingAt = new Map();   // ip -> last typing event time
 
+// ---------- direct messages (text only, 1 to 1) ----------
+// Identity: the browser keeps a secret "dk". The server only ever uses iid = first 16 hex of sha256(dk), which is public
+// (shown in the online list). Nobody can act as an iid without knowing its dk. DMs are never stored, except a short
+// in-memory copy so a reported message can be checked by moderators.
+const okDk = s => /^[a-f0-9]{32}$/.test(s);
+const okIid = s => /^[a-f0-9]{16}$/.test(s);
+const iidOf = dk => (okDk(String(dk || '')) ? sha(dk).slice(0, 16) : '');
+const dmPairs = new Map();    // "a:b" (sorted) -> { from, to, accepted, t }. A first message is only a request until the other side replies or accepts.
+const dmBlocks = new Map();   // iid -> Set of iids it blocked (memory only, the browser re-sends its list on every join)
+const dmNew = new Map();      // iid -> times it started a new conversation
+const dmLog = new Map();      // msg id -> { ip, from, to, fromNick, toNick, text, t }, max 1000, 12h
+const DM_LOG_TTL = 12 * 3600000, DM_PAIR_TTL = 24 * 3600000;
+function liveByIid(iid) {
+  const out = [];
+  for (const r of rooms.values()) for (const c of r.clients) if (c.iid === iid) out.push(c);
+  return out;
+}
+
 function room(name) {
   // ownerTok: sha256 of the creator's secret (private rooms only). kicked: ip -> expiry time.
   if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', kicked: new Map() });
@@ -31,7 +49,7 @@ function room(name) {
 function sys(name, text) {
   const r = room(name);
   broadcast(name, { system: true, text, count: r.clients.size,
-    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, nick: c.nick, owner: !!c.owner })) });
+    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner })) });
 }
 function isKicked(r, ip) {
   const t = r.kicked.get(ip);
@@ -205,6 +223,7 @@ http.createServer((req, res) => {
         } else if (m.a === 'unban') {
           if (bans.delete(String(m.ip || ''))) touch('bans');
         } else if (m.a === 'close') {
+          if (rep && rep.dm) return json(res, 400, { error: 'a private message has no room' });
           const name = rep ? rep.room : String(m.room || '').toLowerCase();
           if (!okRoom(name)) return json(res, 400, { error: 'bad room' });
           closeRoom(name, m.reason || 'moderator');
@@ -238,8 +257,9 @@ http.createServer((req, res) => {
     conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner;
     res.uid = clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
+    res.iid = iidOf(url.searchParams.get('dk'));   // '' for old pages without dk: they simply have no DM
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid } })}\n\n`);
     r.clients.add(res);
     sys(name, `${nick} joined`);
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -300,12 +320,82 @@ http.createServer((req, res) => {
       } catch { res.writeHead(400); res.end(); }
     });
   }
+  // Send a direct message. Statuses: 204 ok, 404 recipient offline, 409 waiting for them to accept, 429 too fast.
+  if (url.pathname === '/dm' && req.method === 'POST') {
+    return readBody(req, 2000, body => {
+      try {
+        const m = JSON.parse(body), from = iidOf(m.dk), to = String(m.to || '');
+        let text = clean(m.text, 500);
+        if (!from || !okIid(to) || to === from || !text) return json(res, 400, { error: 'bad request' });
+        if (isBanned(ip)) return json(res, 403, { error: 'banned' });
+        const mine = liveByIid(from);
+        if (!mine.length) return json(res, 403, { error: 'not online' });   // you must be connected to a room
+        if (limited(ip)) return json(res, 429, { error: 'slow down' });
+        const targets = liveByIid(to);
+        if (!targets.length) return json(res, 404, { error: 'offline' });
+        if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) { res.writeHead(204); return res.end(); }   // blocked: dropped without telling the sender
+        const key = [from, to].sort().join(':'), now = Date.now();
+        let pair = dmPairs.get(key), request = false;
+        if (!pair) {
+          const recent = (dmNew.get(from) || []).filter(t => now - t < 3600000);
+          if (recent.length >= 6) return json(res, 429, { error: 'too many new conversations' });
+          let pending = 0;
+          for (const p of dmPairs.values()) if (p.to === to && !p.accepted) pending++;
+          if (pending >= 15) { res.writeHead(204); return res.end(); }   // their request inbox is full
+          recent.push(now); dmNew.set(from, recent);
+          pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true;
+          if (dmPairs.size > 5000) dmPairs.delete(dmPairs.keys().next().value);
+        } else if (!pair.accepted) {
+          if (pair.from === from) return json(res, 409, { error: 'pending' });
+          pair.accepted = true;   // replying counts as accepting
+        }
+        pair.t = now;
+        BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
+        const id = crypto.randomUUID().slice(0, 8);
+        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now });
+        if (dmLog.size > 1000) dmLog.delete(dmLog.keys().next().value);
+        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request } })}\n\n`;
+        targets.forEach(c => c.write(data));
+        json(res, 200, { id, t: now });
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
+  // The receiver accepts a request, so the sender may keep writing.
+  if (url.pathname === '/dm/accept' && req.method === 'POST') {
+    return readBody(req, 500, body => {
+      try {
+        const m = JSON.parse(body), me = iidOf(m.dk), other = String(m.from || '');
+        const pair = okIid(other) && me ? dmPairs.get([me, other].sort().join(':')) : null;
+        if (pair && pair.to === me) pair.accepted = true;
+        res.writeHead(204); res.end();
+      } catch { res.writeHead(400); res.end(); }
+    });
+  }
+  // Keep the server's block list in step with the browser's: add and remove lists of iids.
+  if (url.pathname === '/dm/block' && req.method === 'POST') {
+    return readBody(req, 4000, body => {
+      try {
+        const m = JSON.parse(body), me = iidOf(m.dk);
+        if (!me) { res.writeHead(400); return res.end(); }
+        const set = dmBlocks.get(me) || new Set();
+        (Array.isArray(m.add) ? m.add : []).slice(0, 200).forEach(i => { if (okIid(String(i)) && set.size < 300) set.add(String(i)); });
+        (Array.isArray(m.remove) ? m.remove : []).slice(0, 200).forEach(i => set.delete(String(i)));
+        if (set.size) { dmBlocks.set(me, set); if (dmBlocks.size > 5000) dmBlocks.delete(dmBlocks.keys().next().value); } else dmBlocks.delete(me);
+        res.writeHead(204); res.end();
+      } catch { res.writeHead(400); res.end(); }
+    });
+  }
   if (url.pathname === '/report' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       res.writeHead(204); res.end();
       if (isBanned(ip) || limited(ip)) return;
       try {
-        const id = String(JSON.parse(body).id || '').slice(0, 8), src = sent.get(id);
+        const b = JSON.parse(body), id = String(b.id || '').slice(0, 8);
+        let src = sent.get(id);
+        if (!src) {   // a private message can only be reported by the person it was sent to
+          const d = dmLog.get(id);
+          if (d && iidOf(b.dk) === d.to) src = { ip: d.ip, room: 'dm', nick: d.fromNick, text: d.text, t: d.t, dm: true };
+        }
         if (!src) return;   // we only trust our own copy of the message, not what the client sends
         const open = reports.find(r => r.msgId === id && r.status === 'open');
         if (open) { if (!open.reporters.includes(ip)) { open.reporters.push(ip); open.count++; touch('reports'); } return; }
@@ -324,6 +414,9 @@ setInterval(() => {
   for (const [k, a] of hits) if (!a.some(t => n - t < 10000)) hits.delete(k);
   for (const [k, f] of adminFails) if (n - f.t > 900000) adminFails.delete(k);
   for (const [k, t] of typingAt) if (n - t > 10000) typingAt.delete(k);
+  for (const [k, p] of dmPairs) if (n - p.t > DM_PAIR_TTL) dmPairs.delete(k);
+  for (const [k, d] of dmLog) if (n - d.t > DM_LOG_TTL) dmLog.delete(k);
+  for (const [k, a] of dmNew) if (!a.some(t => n - t < 3600000)) dmNew.delete(k);
   let pruned = false;   // reports are newest first, so the oldest are at the end
   while (reports.length && reports[reports.length - 1].at < n - REPORT_KEEP) { reports.pop(); pruned = true; }
   if (pruned) touch('reports');

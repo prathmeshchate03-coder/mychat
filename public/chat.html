@@ -9,8 +9,9 @@
 <b>Topics</b><div class="chips" id="chips"></div>
 <input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
 <button id="priv" class="ghost">Create private room</button></aside>
-<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button></div>
+<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><button id="dmbtn" class="ghost" aria-expanded="false" aria-controls="dms">Messages<span id="dmbadge" hidden></span></button><button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button></div>
 <div id="users" hidden></div>
+<div id="dms" hidden></div>
 <div id="msgs" aria-live="polite"></div>
 <div id="typing" aria-live="polite"></div>
 <div id="emojis" hidden></div>
@@ -23,6 +24,9 @@ const typers=new Map();
 let uid=localStorage.uid;if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
 let blocked={};try{blocked=JSON.parse(localStorage.blocked||'{}')||{}}catch{}
 const saveBlocked=()=>{try{localStorage.blocked=JSON.stringify(blocked)}catch{}};
+// dk: a secret kept only in this browser. The server turns it into a public id (iid) that proves who you are for private messages.
+let dk=localStorage.dk;if(!/^[a-f0-9]{32}$/.test(dk||'')){dk=[...crypto.getRandomValues(new Uint8Array(16))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.dk=dk}
+let dmBlocked={};try{dmBlocked=JSON.parse(localStorage.dmBlocked||'{}')||{}}catch{}
 const slug=s=>s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30);
 function el(tag,txt,cls){const e=document.createElement(tag);if(txt!=null&&txt!=='')e.textContent=txt;if(cls)e.className=cls;return e}
 $('nick').value=nick||'Guest'+Math.floor(Math.random()*9000+1000);
@@ -35,10 +39,12 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
  users=[];me={id:'',owner:false};typers.clear();showTyping();$('cnt').hidden=true;closePanels();
  otok=localStorage.getItem('otok:'+name)||'';
  if(es)es.close();
- es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick)+'&uid='+uid+(otok?'&otok='+otok:''));
+ es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick)+'&uid='+uid+'&dk='+dk+(otok?'&otok='+otok:''));
  es.onmessage=e=>{const d=JSON.parse(e.data);
-  if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);renderUsers()}
+  if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);renderUsers();
+   if(Object.keys(dmBlocked).length)dmCall('/dm/block',{add:Object.keys(dmBlocked)}).catch(()=>{})}   // keep the server's block list in step after restarts
   else if(d.typing)onTyping(d);
+  else if(d.dm)onDm(d.dm);
   else add(d)};
  es.onerror=()=>{if(es.readyState===2)notice('Cannot join this room. You may be banned or removed, the room may be closed, or you have too many tabs open.')};
  $('side').classList.remove('open')}
@@ -64,6 +70,7 @@ function renderUsers(){
   row.append(el('span',u.nick+(u.id===me.id?' (you)':''),'un'));
   if(u.owner)row.append(el('span','owner','badge'));
   if(u.id!==me.id){
+   if(u.iid&&me.iid&&u.iid!==me.iid&&!dmBlocked[u.iid]){const mb=el('button','Message','ghost sm');mb.onclick=()=>openDm(u.iid,u.nick);row.append(mb)}
    if(u.uid&&u.uid!==uid){const bb=el('button',blocked[u.uid]?'Unblock':'Block','ghost sm');bb.onclick=()=>blocked[u.uid]?unblock(u.uid):block(u.uid,u.nick);row.append(bb)}
    if(me.owner&&!u.owner){const kb=el('button','Kick','ghost sm');kb.onclick=()=>kickUser(u);row.append(kb)}}
   p.append(row)});
@@ -77,8 +84,67 @@ function block(id,name){if(Object.keys(blocked).length>=200)return notice('Block
 function unblock(id){delete blocked[id];saveBlocked();renderUsers();notice('Unblocked. Their new messages will show again.')}
 function kickUser(u){if(!confirm('Remove '+u.nick+' from this room?'))return;
  fetch('/kick',{method:'POST',body:JSON.stringify({room,otok,cid:u.id})}).then(r=>{if(r.status===204)notice(u.nick+' was removed.');else notice('Could not remove '+u.nick+'.')})}
-function closePanels(){$('users').hidden=true;$('emojis').hidden=true;$('cnt').setAttribute('aria-expanded','false');$('emo').setAttribute('aria-expanded','false')}
+function closePanels(){$('users').hidden=true;$('emojis').hidden=true;$('dms').hidden=true;
+ $('cnt').setAttribute('aria-expanded','false');$('emo').setAttribute('aria-expanded','false');$('dmbtn').setAttribute('aria-expanded','false')}
 $('cnt').onclick=()=>{const open=$('users').hidden;closePanels();$('users').hidden=!open;$('cnt').setAttribute('aria-expanded',String(open))};
+
+// ---- private messages (1 to 1, text only) ----
+// A first message is only a request: the other person must reply or press Accept before you can send more.
+// Conversations live in this page only, so they are gone when you reload. Both people must be online.
+const threads=new Map();let curThread='';
+const saveDmBlocked=()=>{try{localStorage.dmBlocked=JSON.stringify(dmBlocked)}catch{}};
+const dmCall=(path,body)=>fetch(path,{method:'POST',body:JSON.stringify({dk,...body})});
+function thread(iid,name){let t=threads.get(iid);if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false};threads.set(iid,t)}if(name)t.nick=name;return t}
+function updateBadge(){let n=0;threads.forEach(t=>n+=t.unread);const b=$('dmbadge');b.hidden=!n;b.textContent=n}
+function onDm(m){if(dmBlocked[m.from])return;const t=thread(m.from,m.nick),first=!t.msgs.length;
+ t.msgs.push({id:m.id,mine:false,text:m.text,t:m.t});if(first&&m.request)t.request=true;
+ if($('dms').hidden||curThread!==m.from){t.unread++;if(first)notice('Private message from '+t.nick+'. Open Messages to read it.')}
+ updateBadge();renderDms()}
+function showDms(iid){closePanels();$('dms').hidden=false;$('dmbtn').setAttribute('aria-expanded','true');curThread=iid||'';
+ if(iid){thread(iid).unread=0;updateBadge()}renderDms();const i=$('dmtext');if(i&&!i.disabled)i.focus()}
+function openDm(iid,name){thread(iid,name);showDms(iid)}
+$('dmbtn').onclick=()=>{if($('dms').hidden)showDms('');else closePanels()};
+function renderDms(){const p=$('dms');if(p.hidden)return;
+ const old=$('dmtext'),keep=old?old.value:'',focused=old&&document.activeElement===old;p.innerHTML='';
+ if(!curThread){const h=el('div','','dmhead');h.append(el('b','Messages'));const x=el('button','Close','ghost sm');x.onclick=closePanels;h.append(x);
+  const body=el('div','','dmbody');
+  const list=[...threads.values()].filter(t=>t.msgs.length).sort((a,b)=>b.msgs[b.msgs.length-1].t-a.msgs[a.msgs.length-1].t);
+  if(!list.length)body.append(el('p','No private messages yet. Open the online list and press Message next to someone.','mut'));
+  list.forEach(t=>{const last=t.msgs[t.msgs.length-1],row=el('div','','dmrow'),info=el('div','','dminfo');
+   row.tabIndex=0;row.setAttribute('role','button');info.append(el('b',t.nick),el('span',(last.mine?'You: ':'')+last.text,'dmlast'));row.append(info);
+   if(t.request)row.append(el('span','request','badge'));if(t.unread)row.append(el('span',String(t.unread),'dot'));
+   row.onclick=()=>showDms(t.iid);row.onkeydown=e=>{if(e.key==='Enter')showDms(t.iid)};body.append(row)});
+  const bl=Object.keys(dmBlocked);
+  if(bl.length){body.append(el('div','Blocked for messages','uh'));
+   bl.forEach(id=>{const row=el('div','','urow');row.append(el('span',dmBlocked[id],'un'));const ub=el('button','Unblock','ghost sm');
+    ub.onclick=()=>{delete dmBlocked[id];saveDmBlocked();dmCall('/dm/block',{remove:[id]});renderDms();renderUsers()};row.append(ub);body.append(row)})}
+  p.append(h,body);return}
+ const t=thread(curThread),h=el('div','','dmhead'),back=el('button','Back','ghost sm'),blk=el('button','Block','ghost sm');
+ back.onclick=()=>{curThread='';renderDms()};blk.onclick=()=>blockDm(t);h.append(back,el('b',t.nick),blk);
+ const body=el('div','','dmbody');body.id='dmmsgs';
+ if(!t.msgs.length)body.append(el('p','Say hello to '+t.nick+'. They have to accept your first message before you can send more.','mut'));
+ t.msgs.forEach(m=>{const d=el('div','','m'+(m.mine?' me':''));d.append(el('b',m.mine?'You':t.nick));
+  if(!m.mine){const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');rp.onclick=()=>{dmCall('/report',{id:m.id});rp.textContent='reported'};d.append(rp)}
+  d.append(el('div',m.text));body.append(d)});
+ const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
+ if(t.request){const bar=el('div','','dmreq'),ac=el('button','Accept','sm');bar.append(el('span',t.nick+' wants to message you.'));
+  ac.onclick=()=>{t.request=false;dmCall('/dm/accept',{from:t.iid});renderDms()};bar.append(ac);body.append(bar)}
+ if(waiting)body.append(el('p','Waiting for '+t.nick+' to accept your message.','mut'));
+ const f=el('div','','dmform'),inp=el('input'),sb=el('button','Send');
+ inp.type='text';inp.id='dmtext';inp.maxLength=500;inp.placeholder='Private message';inp.autocomplete='off';inp.setAttribute('aria-label','Private message');inp.value=keep;
+ sb.onclick=()=>sendDm(t,inp);inp.onkeydown=e=>{if(e.key==='Enter')sendDm(t,inp)};
+ if(waiting){inp.disabled=true;sb.disabled=true}
+ f.append(inp,sb);p.append(h,body,f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
+function dmNote(text){const b=$('dmmsgs');if(b){b.append(el('p',text,'dmerr'));b.scrollTop=b.scrollHeight}}
+function sendDm(t,inp){const text=inp.value.trim();if(!text)return;inp.value='';
+ dmCall('/dm',{to:t.iid,text}).then(async r=>{
+  if(r.ok){const j=await r.json().catch(()=>({}));t.msgs.push({id:j.id||'',mine:true,text,t:j.t||Date.now()});t.request=false;renderDms();return}
+  inp.value=text;
+  dmNote(r.status===404?t.nick+' is not online right now.':r.status===409?'Wait for '+t.nick+' to accept your first message.':r.status===429?'Slow down a little.':'This message could not be sent.')
+ }).catch(()=>{inp.value=text;dmNote('Network problem. Try again.')})}
+function blockDm(t){if(Object.keys(dmBlocked).length>=200)return dmNote('Block list is full.');
+ if(!confirm('Block private messages from '+t.nick+'?'))return;
+ dmBlocked[t.iid]=t.nick;saveDmBlocked();dmCall('/dm/block',{add:[t.iid]});threads.delete(t.iid);curThread='';updateBadge();renderDms();renderUsers()}
 
 // ---- typing indicator ----
 function onTyping(d){if(d.uid===uid||(d.uid&&blocked[d.uid]))return;
