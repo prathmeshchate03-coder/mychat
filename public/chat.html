@@ -14,8 +14,16 @@
 <div id="dms" hidden></div>
 <div id="msgs" aria-live="polite"></div>
 <div id="typing" aria-live="polite"></div>
-<div id="emojis" hidden></div>
-<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<div id="emojis" hidden></div><div id="form">
+  <button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button>
+
+  <!-- Image Upload Button -->
+  <label for="imgUpload" class="ghost" style="padding: 8px 12px; cursor: pointer; display: flex; align-items: center;" title="Send Image">&#128247;</label>
+  <input type="file" id="imgUpload" accept="image/*" hidden>
+
+  <input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message">
+  <button id="send">Send</button>
+</div>
 <script>
 const $=id=>document.getElementById(id);
 let nick=localStorage.nick,room,es,otok='',me={id:'',owner:false},users=[],lastTyping=0;
