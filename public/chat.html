@@ -75,16 +75,24 @@ function add(m){
   if(m.isImage){
     const img=document.createElement('img');
     img.src=m.text;
-    img.style.maxWidth='100%';
+    // Thumbnail Style (Chota size)
+    img.style.maxWidth='200px';
+    img.style.maxHeight='200px';
+    img.style.objectFit='cover';
     img.style.borderRadius='8px';
-    img.style.marginTop='4px';
+    img.style.marginTop='6px';
+    img.style.cursor='pointer';
+    img.style.display='block';
+    
+    // Click hone par Full Screen Preview Dikhana
+    img.onclick=()=>openModal(m.text);
+    
     d.append(rp,img);
   } else {
     d.append(rp,el('div',m.text));
   }
   box.append(d);box.scrollTop=box.scrollHeight;
-} // <--- Yeh closing bracket zaroori tha jo miss ho gaya tha!
-
+}
 // ---- users panel, block, kick ----
 function renderUsers(){
  const c=$('cnt');c.hidden=!users.length;c.textContent=users.length+' online';
@@ -223,4 +231,12 @@ async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIC
  if(!l.length){$('list').textContent='No active rooms yet. Start one.';return}
  l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
 if(nick&&location.hash.length>1)$('gate').querySelector('p').textContent='Welcome back. Confirm to continue.';
+  function openModal(src){
+  $('modalImg').src = src;
+  $('imgModal').style.display = 'flex';
+}
+<!-- Full Image View Modal -->
+<div id="imgModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99; justify-content:center; align-items:center; cursor:pointer;" onclick="this.style.display='none'">
+  <img id="modalImg" style="max-width:90vw; max-height:90vh; border-radius:10px; box-shadow:0 0 20px rgba(0,0,0,0.5);">
+</div>
 </script></body></html>
