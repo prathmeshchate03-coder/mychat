@@ -14,25 +14,27 @@
 <div id="dms" hidden></div>
 <div id="msgs" aria-live="polite"></div>
 <div id="typing" aria-live="polite"></div>
-<div id="emojis" hidden></div><div id="form">
+<div id="emojis" hidden></div>
+<div id="form">
   <button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button>
-
-  <!-- Image Upload Button -->
   <label for="imgUpload" class="ghost" style="padding: 8px 12px; cursor: pointer; display: flex; align-items: center;" title="Send Image">&#128247;</label>
   <input type="file" id="imgUpload" accept="image/*" hidden>
-
   <input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message">
   <button id="send">Send</button>
+</div></div></div>
+
+<!-- Full Image View Modal -->
+<div id="imgModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99; justify-content:center; align-items:center; cursor:pointer;" onclick="this.style.display='none'">
+  <img id="modalImg" style="max-width:90vw; max-height:90vh; border-radius:10px; box-shadow:0 0 20px rgba(0,0,0,0.5);">
 </div>
+
 <script>
 const $=id=>document.getElementById(id);
 let nick=localStorage.nick,room,es,otok='',me={id:'',owner:false},users=[],lastTyping=0;
 const typers=new Map();
-// uid: a random id kept in this browser. It lets people block someone even if the nickname changes.
 let uid=localStorage.uid;if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
 let blocked={};try{blocked=JSON.parse(localStorage.blocked||'{}')||{}}catch{}
 const saveBlocked=()=>{try{localStorage.blocked=JSON.stringify(blocked)}catch{}};
-// dk: a secret kept only in this browser. The server turns it into a public id (iid) that proves who you are for private messages.
 let dk=localStorage.dk;if(!/^[a-f0-9]{32}$/.test(dk||'')){dk=[...crypto.getRandomValues(new Uint8Array(16))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.dk=dk}
 let dmBlocked={};try{dmBlocked=JSON.parse(localStorage.dmBlocked||'{}')||{}}catch{}
 const slug=s=>s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30);
@@ -50,7 +52,7 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
  es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick)+'&uid='+uid+'&dk='+dk+(otok?'&otok='+otok:''));
  es.onmessage=e=>{const d=JSON.parse(e.data);
   if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);renderUsers();
-   if(Object.keys(dmBlocked).length)dmCall('/dm/block',{add:Object.keys(dmBlocked)}).catch(()=>{})}   // keep the server's block list in step after restarts
+   if(Object.keys(dmBlocked).length)dmCall('/dm/block',{add:Object.keys(dmBlocked)}).catch(()=>{})}
   else if(d.typing)onTyping(d);
   else if(d.dm)onDm(d.dm);
   else add(d)};
@@ -58,42 +60,35 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
  $('side').classList.remove('open')}
 function notice(t){const d=el('div',t,'sys');$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
 
-function add(m){
-  const box=$('msgs');
-  if(m.system){
-    const d=el('div',m.text,'sys');
-    if(m.users){users=m.users;renderUsers()}
-    box.append(d);box.scrollTop=box.scrollHeight;return;
-  }
-  if(m.uid&&blocked[m.uid])return;
-  const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
-  const b=el('b',m.nick);d.append(b);
-  if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
-  const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
-  rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
-  
-  if(m.isImage){
-    const img=document.createElement('img');
-    img.src=m.text;
-    // Thumbnail Style (Chota size)
-    img.style.maxWidth='200px';
-    img.style.maxHeight='200px';
-    img.style.objectFit='cover';
-    img.style.borderRadius='8px';
-    img.style.marginTop='6px';
-    img.style.cursor='pointer';
-    img.style.display='block';
-    
-    // Click hone par Full Screen Preview Dikhana
-    img.onclick=()=>openModal(m.text);
-    
-    d.append(rp,img);
-  } else {
-    d.append(rp,el('div',m.text));
-  }
-  box.append(d);box.scrollTop=box.scrollHeight;
+function add(m){const box=$('msgs');
+ if(m.system){const d=el('div',m.text,'sys');
+  if(m.users){users=m.users;renderUsers()}
+  box.append(d);box.scrollTop=box.scrollHeight;return}
+ if(m.uid&&blocked[m.uid])return;
+ const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
+ const b=el('b',m.nick);d.append(b);
+ if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
+ const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
+ rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
+ 
+ if(m.isImage){
+  const img=document.createElement('img');
+  img.src=m.text;
+  img.style.maxWidth='200px';
+  img.style.maxHeight='200px';
+  img.style.objectFit='cover';
+  img.style.borderRadius='8px';
+  img.style.marginTop='6px';
+  img.style.cursor='pointer';
+  img.style.display='block';
+  img.onclick=()=>openModal(m.text);
+  d.append(rp,img);
+ } else {
+  d.append(rp,el('div',m.text));
+ }
+ box.append(d);box.scrollTop=box.scrollHeight;
 }
-// ---- users panel, block, kick ----
+
 function renderUsers(){
  const c=$('cnt');c.hidden=!users.length;c.textContent=users.length+' online';
  const p=$('users');p.innerHTML='';
@@ -119,16 +114,13 @@ function closePanels(){$('users').hidden=true;$('emojis').hidden=true;$('dms').h
  $('cnt').setAttribute('aria-expanded','false');$('emo').setAttribute('aria-expanded','false');$('dmbtn').setAttribute('aria-expanded','false')}
 $('cnt').onclick=()=>{const open=$('users').hidden;closePanels();$('users').hidden=!open;$('cnt').setAttribute('aria-expanded',String(open))};
 
-// ---- private messages (1 to 1, text only) ----
-// A first message is only a request: the other person must reply or press Accept before you can send more.
-// Conversations live in this page only, so they are gone when you reload. Both people must be online.
 const threads=new Map();let curThread='';
 const saveDmBlocked=()=>{try{localStorage.dmBlocked=JSON.stringify(dmBlocked)}catch{}};
 const dmCall=(path,body)=>fetch(path,{method:'POST',body:JSON.stringify({dk,...body})});
 function thread(iid,name){let t=threads.get(iid);if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false};threads.set(iid,t)}if(name)t.nick=name;return t}
 function updateBadge(){let n=0;threads.forEach(t=>n+=t.unread);const b=$('dmbadge');b.hidden=!n;b.textContent=n}
 function onDm(m){if(dmBlocked[m.from])return;const t=thread(m.from,m.nick),first=!t.msgs.length;
- t.msgs.push({id:m.id,mine:false,text:m.text,t:m.t});if(first&&m.request)t.request=true;
+ t.msgs.push({id:m.id,mine:false,text:m.text,isImage:!!m.isImage,t:m.t});if(first&&m.request)t.request=true;
  if($('dms').hidden||curThread!==m.from){t.unread++;if(first)notice('Private message from '+t.nick+'. Open Messages to read it.')}
  updateBadge();renderDms()}
 function showDms(iid){closePanels();$('dms').hidden=false;$('dmbtn').setAttribute('aria-expanded','true');curThread=iid||'';
@@ -142,7 +134,7 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
   const list=[...threads.values()].filter(t=>t.msgs.length).sort((a,b)=>b.msgs[b.msgs.length-1].t-a.msgs[a.msgs.length-1].t);
   if(!list.length)body.append(el('p','No private messages yet. Open the online list and press Message next to someone.','mut'));
   list.forEach(t=>{const last=t.msgs[t.msgs.length-1],row=el('div','','dmrow'),info=el('div','','dminfo');
-   row.tabIndex=0;row.setAttribute('role','button');info.append(el('b',t.nick),el('span',(last.mine?'You: ':'')+last.text,'dmlast'));row.append(info);
+   row.tabIndex=0;row.setAttribute('role','button');info.append(el('b',t.nick),el('span',(last.mine?'You: ':'')+(last.isImage?'📷 Photo':last.text),'dmlast'));row.append(info);
    if(t.request)row.append(el('span','request','badge'));if(t.unread)row.append(el('span',String(t.unread),'dot'));
    row.onclick=()=>showDms(t.iid);row.onkeydown=e=>{if(e.key==='Enter')showDms(t.iid)};body.append(row)});
   const bl=Object.keys(dmBlocked);
@@ -156,7 +148,22 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
  if(!t.msgs.length)body.append(el('p','Say hello to '+t.nick+'. They have to accept your first message before you can send more.','mut'));
  t.msgs.forEach(m=>{const d=el('div','','m'+(m.mine?' me':''));d.append(el('b',m.mine?'You':t.nick));
   if(!m.mine){const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');rp.onclick=()=>{dmCall('/report',{id:m.id});rp.textContent='reported'};d.append(rp)}
-  d.append(el('div',m.text));body.append(d)});
+  if(m.isImage){
+   const img=document.createElement('img');
+   img.src=m.text;
+   img.style.maxWidth='180px';
+   img.style.maxHeight='180px';
+   img.style.objectFit='cover';
+   img.style.borderRadius='8px';
+   img.style.marginTop='4px';
+   img.style.cursor='pointer';
+   img.onclick=()=>openModal(m.text);
+   d.append(img);
+  } else {
+   d.append(el('div',m.text));
+  }
+  body.append(d);
+ });
  const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
  if(t.request){const bar=el('div','','dmreq'),ac=el('button','Accept','sm');bar.append(el('span',t.nick+' wants to message you.'));
   ac.onclick=()=>{t.request=false;dmCall('/dm/accept',{from:t.iid});renderDms()};bar.append(ac);body.append(bar)}
@@ -177,7 +184,6 @@ function blockDm(t){if(Object.keys(dmBlocked).length>=200)return dmNote('Block l
  if(!confirm('Block private messages from '+t.nick+'?'))return;
  dmBlocked[t.iid]=t.nick;saveDmBlocked();dmCall('/dm/block',{add:[t.iid]});threads.delete(t.iid);curThread='';updateBadge();renderDms();renderUsers()}
 
-// ---- typing indicator ----
 function onTyping(d){if(d.uid===uid||(d.uid&&blocked[d.uid]))return;
  clearTimeout(typers.get(d.nick));typers.set(d.nick,setTimeout(()=>{typers.delete(d.nick);showTyping()},3500));showTyping()}
 function showTyping(){const n=[...typers.keys()];
@@ -185,7 +191,6 @@ function showTyping(){const n=[...typers.keys()];
 $('text').oninput=()=>{const now=Date.now();
  if($('text').value&&now-lastTyping>2500){lastTyping=now;fetch('/typing',{method:'POST',body:JSON.stringify({room,nick,uid})}).catch(()=>{})}};
 
-// ---- emoji ----
 '😀 😂 🤣 😊 😍 😘 😎 🤔 😅 😭 😡 😴 🙄 😉 🥳 😇 👍 👎 👏 🙏 💪 🔥 ❤️ 💔 ✨ 🎉 🎵 🎮 🍕 ☕ 🌙 ⭐'.split(' ').forEach(e=>{
  const b=el('button',e,'ghost');b.setAttribute('aria-label','Insert '+e);
  b.onclick=()=>{const t=$('text'),s=t.selectionStart??t.value.length,x=t.selectionEnd??s;
@@ -198,11 +203,11 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
 function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;
  fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned, removed or room closed).')})}
 $('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
-// Image upload handler for rooms
+
 $('imgUpload').onchange = (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  if (file.size > 500000) { // 500KB limit taaki server par load na pade
+  if (file.size > 500000) {
     alert('Image size 500KB se kam honi chahiye.');
     return;
   }
@@ -218,11 +223,11 @@ $('imgUpload').onchange = (e) => {
     });
   };
   reader.readAsDataURL(file);
-  e.target.value = ''; // Input reset karne ke liye
+  e.target.value = '';
 };
+
 $('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
 $('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6)),name='p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
- // secret that proves ownership of this private room; stays in this browser only
  localStorage.setItem('otok:'+name,[...crypto.getRandomValues(new Uint8Array(12))].map(x=>x.toString(16).padStart(2,'0')).join(''));
  join(name);prompt('Share this link to invite people. You are the owner and can remove people from the online list:',location.href)};
 $('menu').onclick=()=>$('side').classList.toggle('open');
@@ -231,12 +236,9 @@ async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIC
  if(!l.length){$('list').textContent='No active rooms yet. Start one.';return}
  l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
 if(nick&&location.hash.length>1)$('gate').querySelector('p').textContent='Welcome back. Confirm to continue.';
-  function openModal(src){
+
+function openModal(src){
   $('modalImg').src = src;
   $('imgModal').style.display = 'flex';
 }
-<!-- Full Image View Modal -->
-<div id="imgModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:99; justify-content:center; align-items:center; cursor:pointer;" onclick="this.style.display='none'">
-  <img id="modalImg" style="max-width:90vw; max-height:90vh; border-radius:10px; box-shadow:0 0 20px rgba(0,0,0,0.5);">
-</div>
 </script></body></html>
