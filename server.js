@@ -275,14 +275,21 @@ http.createServer((req, res) => {
     return readBody(req, 5000, body => {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase();
-        let text = clean(m.text, 500); const nick = clean(m.nick, 20);
+        let text = clean(m.text, m.isImage ? 200000 : 500); const nick = clean(m.nick, 20);
         if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
         if (isBanned(ip) || closed.has(name)) { res.writeHead(403); return res.end(); }
         const r = rooms.get(name);
         if (r && isKicked(r, ip) && !(r.ownerTok && okTok(String(m.otok || '')) && sha(String(m.otok)) === r.ownerTok)) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
-        const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
+        const msg = { 
+  id: crypto.randomUUID().slice(0, 8), 
+  nick, 
+  uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), 
+  text, 
+  isImage: !!m.isImage, 
+  t: Date.now() 
+};
         sent.set(msg.id, { ip, room: name, nick, text, t: msg.t });   // ip stays server-side, never broadcast
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
