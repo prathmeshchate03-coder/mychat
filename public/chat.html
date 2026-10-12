@@ -175,6 +175,28 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closePanels()});
 function send(){const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;
  fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned, removed or room closed).')})}
 $('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
+// Image upload handler for rooms
+$('imgUpload').onchange = (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  if (file.size > 500000) { // 500KB limit taaki server par load na pade
+    alert('Image size 500KB se kam honi chahiye.');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (uploadEvent) => {
+    const base64Image = uploadEvent.target.result;
+    fetch('/send', {
+      method: 'POST',
+      body: JSON.stringify({ room, nick, uid, otok, text: base64Image, isImage: true })
+    }).then(r => {
+      if (r.status === 429) notice('Slow down a little');
+      else if (r.status === 403) notice('Aap yahan message nahi bhej sakte.');
+    });
+  };
+  reader.readAsDataURL(file);
+  e.target.value = ''; // Input reset karne ke liye
+};
 $('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
 $('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6)),name='p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
  // secret that proves ownership of this private room; stays in this browser only
