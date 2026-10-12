@@ -68,7 +68,17 @@ function add(m){const box=$('msgs');
  if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
  const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
  rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
- d.append(rp,el('div',m.text));box.append(d);box.scrollTop=box.scrollHeight}
+ if(m.isImage){
+    const img=document.createElement('img');
+    img.src=m.text;
+    img.style.maxWidth='100%';
+    img.style.borderRadius='8px';
+    img.style.marginTop='4px';
+    d.append(rp,img);
+  } else {
+    d.append(rp,el('div',m.text));
+  }
+  box.append(d);box.scrollTop=box.scrollHeight;
 
 // ---- users panel, block, kick ----
 function renderUsers(){
