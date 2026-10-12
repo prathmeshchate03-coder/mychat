@@ -6,7 +6,8 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const rooms = new Map(), hits = new Map(), conns = new Map();
 const bans = new Map();       // ip -> { reason, t, until }  (until = 0 means permanent)
 const closed = new Map();     // room name -> { reason, t }
-const sent = new Map();       // msg id -> { ip, room, nick, text, t }  last 3000 messages, server-side only
+const acctBans = new Map();   // account id -> { name, reason, t }  (banned accounts cannot log in or send)
+const sent = new Map();       // msg id -> { ip, room, nick, text, t, acct?, img? }  last 3000 messages, server-side only
 const reports = [];           // newest first, max 200
 const adminFails = new Map(); // ip -> { n, t }
 const BAD = [];   // add words to filter, e.g. ['word1', 'word2']
@@ -49,7 +50,7 @@ function room(name) {
 function sys(name, text) {
   const r = room(name);
   broadcast(name, { system: true, text, count: r.clients.size,
-    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner })) });
+    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, v: !!c.acct })) });
 }
 function isKicked(r, ip) {
   const t = r.kicked.get(ip);
@@ -72,6 +73,18 @@ function readBody(req, max, cb) {
   req.on('data', d => { body += d; if (body.length > max) { req.destroy(); } });
   req.on('end', () => cb(body));
 }
+// Binary request body (images). Answers 413 itself when the body is too big.
+function readBuf(req, res, max, cb) {
+  const chunks = []; let n = 0, over = false;
+  req.on('data', d => {
+    if (over) return;
+    n += d.length;
+    if (n > max) { over = true; res.setHeader('Connection', 'close'); json(res, 413, { error: 'too_big' }); return; }
+    chunks.push(d);
+  });
+  req.on('end', () => { if (!over) cb(Buffer.concat(chunks)); });
+  req.on('error', () => {});
+}
 
 // ---------- persistence (optional) ----------
 // Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to keep bans, closed rooms and reports across restarts.
@@ -83,19 +96,19 @@ if (DB_URL && !/^[a-z]+:\/\//i.test(DB_URL)) DB_URL = 'https://' + DB_URL;
 const REPORT_KEEP = 14 * 86400000, SAVE_DELAY = 10000;
 let dbReady = !DB_URL, saveTimer = null, dbError = '';
 const dirty = new Set();
-async function dbCmd(cmd) {
+async function dbCmd(cmd, timeoutMs) {
   if (/^rediss?:/i.test(DB_URL)) throw new Error('wrong URL type: use the REST URL that starts with https://, not the redis:// one');
   if (!DB_TOKEN) throw new Error('UPSTASH_REDIS_REST_TOKEN is empty or missing');
   let r;
   try {
     r = await fetch(DB_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + DB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(cmd), signal: AbortSignal.timeout(5000) });
+      body: JSON.stringify(cmd), signal: AbortSignal.timeout(timeoutMs || 5000) });
   } catch (e) { throw new Error('cannot connect to the database URL (' + ((e.cause && (e.cause.code || e.cause.message)) || e.name + ': ' + e.message) + ')'); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
   return j.result;
 }
-const dump = { bans: () => [...bans], closed: () => [...closed], reports: () => reports.filter(r => r.at > Date.now() - REPORT_KEEP) };
+const dump = { bans: () => [...bans], closed: () => [...closed], acctbans: () => [...acctBans], reports: () => reports.filter(r => r.at > Date.now() - REPORT_KEEP) };
 function touch(k) { if (!DB_URL) return; dirty.add(k); if (dbReady && !saveTimer) saveTimer = setTimeout(flush, SAVE_DELAY); }
 async function flush() {
   clearTimeout(saveTimer); saveTimer = null;
@@ -111,6 +124,7 @@ function mergeLoaded(k, data) {
   const now = Date.now();
   if (k === 'bans') data.forEach(e => { if (Array.isArray(e) && okIp(String(e[0])) && e[1] && !bans.has(e[0]) && (!e[1].until || e[1].until > now)) bans.set(e[0], e[1]); });
   else if (k === 'closed') data.forEach(e => { if (Array.isArray(e) && okRoom(String(e[0])) && e[1] && !closed.has(e[0])) closed.set(e[0], e[1]); });
+  else if (k === 'acctbans') data.forEach(e => { if (Array.isArray(e) && /^[a-f0-9]{16}$/.test(String(e[0])) && e[1] && !acctBans.has(e[0])) acctBans.set(e[0], e[1]); });
   else {
     const have = new Set(reports.map(r => r.rid));
     data.forEach(r => { if (r && r.rid && r.at > now - REPORT_KEEP && !have.has(r.rid)) reports.push(r); });
@@ -124,9 +138,24 @@ async function dbLoad() {
       if (raw) { const d = JSON.parse(raw); if (Array.isArray(d)) mergeLoaded(k, d); }
     }
     dbReady = true; dbError = '';
-    console.log(`DB loaded: ${bans.size} bans, ${closed.size} closed rooms, ${reports.length} reports`);
+    console.log(`DB loaded: ${bans.size} bans, ${closed.size} closed rooms, ${acctBans.size} banned accounts, ${reports.length} reports`);
     if (dirty.size) flush();
+    auth.init();
   } catch (e) { dbError = e.message; console.error('DB LOAD FAILED, retrying in 30s:', e.message); setTimeout(dbLoad, 30000); }
+}
+
+// ---------- accounts and images (need the database) ----------
+// Accounts also need MAIL_RELAY_URL + MAIL_RELAY_SECRET (the Google Apps Script mail relay, see mail-relay.gs).
+const dbOn = () => !!DB_URL && dbReady;
+const acctBanned = id => acctBans.has(id);
+const auth = require('./auth')({ db: dbCmd, dbReady: dbOn, isAcctBanned: acctBanned,
+  mailUrl: envClean(process.env.MAIL_RELAY_URL), mailSecret: envClean(process.env.MAIL_RELAY_SECRET), mailDaily: process.env.MAIL_DAILY_LIMIT });
+const images = require('./images')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
+  budgetMB: Number(process.env.IMAGE_BUDGET_MB) || 200, ttlDays: 7 });
+const acctIid = id => sha('acct:' + id).slice(0, 16);   // DM identity of an account, the same on every device
+function who(req, body) {   // who is making a DM request: an account (cookie) or a guest (secret code dk)
+  const user = auth.session(req);
+  return { user, iid: user ? acctIid(user.id) : iidOf(body && body.dk) };
 }
 if (DB_URL) dbLoad();
 async function shutdown() {   // Render sends SIGTERM on every deploy: save pending changes first
@@ -160,6 +189,13 @@ function closeRoom(name, reason) {
   reports.forEach(r => { if (r.room === name && r.status === 'open') r.status = 'closed'; });
   touch('closed'); touch('reports');
 }
+function banAcct(id, name, reason) {
+  acctBans.set(id, { name: clean(name, 20), reason: clean(reason, 100), t: Date.now() });
+  kick(c => c.acct === id, 'Your account has been banned.');
+  reports.forEach(r => { if (r.acct === id && r.status === 'open') r.status = 'banned'; });
+  images.removeByUser(id).catch(() => {});   // pictures this account uploaded recently go with it
+  touch('acctbans'); touch('reports');
+}
 function adminAuth(req, res, ip) {
   if (!ADMIN_TOKEN) { res.writeHead(503); res.end('admin disabled'); return false; }
   const now = Date.now(), f = adminFails.get(ip);
@@ -172,6 +208,10 @@ function adminAuth(req, res, ip) {
 function json(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
 
 http.createServer((req, res) => {
+  handle(req, res).catch(e => { console.error('ERR', e); try { if (!res.headersSent) res.writeHead(500); res.end(); } catch {} });
+}).listen(PORT, () => console.log('JenChat running on port ' + PORT + (ADMIN_TOKEN ? '' : ' (admin disabled: set ADMIN_TOKEN)')));
+
+async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
   // On Render the last X-Forwarded-For entry is the one added by Render's proxy = the real client.
   const ip = (req.headers['x-forwarded-for'] || '').split(',').pop().trim() || req.socket.remoteAddress;
@@ -187,6 +227,13 @@ http.createServer((req, res) => {
     res.writeHead(200, headers);
     return res.end(content);
   }
+  if (auth.handle(req, res, url, ip, seo.siteBase(req), readBody)) return;   // /auth/*, /verify, /reset
+  if (url.pathname === '/img' && req.method === 'POST') {
+    if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
+    return images.upload(req, res, ip, json, readBuf);
+  }
+  const imgMatch = req.method === 'GET' && url.pathname.match(/^\/img\/([a-f0-9]{32})$/);
+  if (imgMatch) return images.serve(req, res, imgMatch[1]);
   if (req.method === 'GET' || req.method === 'HEAD') {
     const page = seo.route(url.pathname, seo.siteBase(req));
     if (page) {
@@ -208,10 +255,23 @@ http.createServer((req, res) => {
         .sort((a, b) => b.count - a.count),
       storage: !DB_URL ? 'memory' : dbReady ? 'database' : 'connecting',
       dbError: dbError.slice(0, 200),   // reason text only, never the URL or token
+      acctBans: [...acctBans].map(([id, b]) => ({ id, ...b })),
+      accounts: auth.status(),
+      images: images.status(),
     });
   }
+  // A reported picture, for the admin page (the token travels in a header, so the page fetches it as a blob)
+  if (url.pathname === '/admin/api/img' && req.method === 'GET') {
+    if (!adminAuth(req, res, ip)) return;
+    const id = String(url.searchParams.get('id') || '');
+    if (!/^[a-f0-9]{32}$/.test(id)) return json(res, 400, { error: 'bad id' });
+    const img = await images.read(id).catch(() => null);
+    if (!img) return json(res, 404, { error: 'gone' });
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+    return res.end(img.buf);
+  }
   if (url.pathname === '/admin/api/action' && req.method === 'POST') {
-    return readBody(req, 2000, body => {
+    return readBody(req, 2000, async body => {
       if (!adminAuth(req, res, ip)) return;
       try {
         const m = JSON.parse(body), rep = m.rid ? reports.find(r => r.rid === m.rid) : null;
@@ -231,6 +291,17 @@ http.createServer((req, res) => {
           if (closed.delete(String(m.room || ''))) touch('closed');
         } else if (m.a === 'dismiss') {
           if (rep) { rep.status = 'dismissed'; touch('reports'); }
+        } else if (m.a === 'banacct') {
+          const id = rep ? rep.acct : String(m.id || '');
+          if (!/^[a-f0-9]{16}$/.test(id || '')) return json(res, 400, { error: 'this message was not sent from an account' });
+          banAcct(id, rep ? rep.nick : m.name, m.reason || (rep ? 'reported: ' + (rep.text || 'image') : 'manual'));
+        } else if (m.a === 'unbanacct') {
+          if (acctBans.delete(String(m.id || ''))) touch('acctbans');
+        } else if (m.a === 'delimg') {
+          const id = rep ? rep.img : String(m.id || '');
+          if (!/^[a-f0-9]{32}$/.test(id || '')) return json(res, 400, { error: 'no image' });
+          await images.remove(id);
+          if (rep) { rep.status = 'image removed'; touch('reports'); }
         } else return json(res, 400, { error: 'unknown action' });
         json(res, 200, { ok: true });
       } catch { json(res, 400, { error: 'bad request' }); }
@@ -245,10 +316,12 @@ http.createServer((req, res) => {
     return res.end(JSON.stringify(list));
   }
   if (url.pathname === '/events') {
-    const name = String(url.searchParams.get('room') || '').toLowerCase(), nick = clean(url.searchParams.get('nick'), 20);
+    const name = String(url.searchParams.get('room') || '').toLowerCase(), user = auth.session(req);
+    const nick = user ? user.name : clean(url.searchParams.get('nick'), 20);   // an account always chats under its own name
     if (!okRoom(name) || !nick || (conns.get(ip) || 0) >= 5) { res.writeHead(400); return res.end(); }
     if (isBanned(ip)) { res.writeHead(403); return res.end('banned'); }
     if (closed.has(name)) { res.writeHead(403); return res.end('closed'); }
+    if (!user && await auth.nameReserved(nick)) { res.writeHead(403); return res.end('reserved'); }   // that name belongs to an account
     const r = room(name), otok = String(url.searchParams.get('otok') || '');
     // The first person to open a private room with a valid secret becomes its owner.
     if (name.startsWith('p-') && okTok(otok) && !r.ownerTok) r.ownerTok = sha(otok);
@@ -256,10 +329,11 @@ http.createServer((req, res) => {
     if (!owner && isKicked(r, ip)) { res.writeHead(403); return res.end('kicked'); }
     conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner;
-    res.uid = clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
-    res.iid = iidOf(url.searchParams.get('dk'));   // '' for old pages without dk: they simply have no DM
+    res.acct = user ? user.id : '';
+    res.uid = user ? 'a' + user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
+    res.iid = user ? acctIid(user.id) : iidOf(url.searchParams.get('dk'));   // '' for old pages without dk: they simply have no DM
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid, uid: res.uid } })}\n\n`);
     r.clients.add(res);
     sys(name, `${nick} joined`);
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -272,18 +346,25 @@ http.createServer((req, res) => {
     return;
   }
   if (url.pathname === '/send' && req.method === 'POST') {
-    return readBody(req, 5000, body => {
+    return readBody(req, 5000, async body => {
       try {
-        const m = JSON.parse(body), name = String(m.room || '').toLowerCase();
-        let text = clean(m.text, 500); const nick = clean(m.nick, 20);
-        if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), user = auth.session(req);
+        let text = clean(m.text, 500), nick = clean(m.nick, 20);
+        const imgId = m.img ? String(m.img) : '';
+        if (user) nick = user.name;
+        if (!okRoom(name) || (!text && !imgId) || !nick) { res.writeHead(400); return res.end(); }
+        if (imgId && !user) return json(res, 403, { error: 'login' });                       // only accounts may send pictures
+        if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });   // and only ones they uploaded themselves
+        if (!user && await auth.nameReserved(nick)) return json(res, 403, { error: 'reserved' });
         if (isBanned(ip) || closed.has(name)) { res.writeHead(403); return res.end(); }
         const r = rooms.get(name);
         if (r && isKicked(r, ip) && !(r.ownerTok && okTok(String(m.otok || '')) && sha(String(m.otok)) === r.ownerTok)) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
-        const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
-        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t });   // ip stays server-side, never broadcast
+        const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
+        if (user) msg.v = true;      // verified account badge
+        if (imgId) msg.img = imgId;
+        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}) });   // ip stays server-side, never broadcast
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
         res.writeHead(204); res.end();
@@ -291,16 +372,18 @@ http.createServer((req, res) => {
     });
   }
   if (url.pathname === '/typing' && req.method === 'POST') {
-    return readBody(req, 500, body => {
+    return readBody(req, 500, async body => {
       res.writeHead(204); res.end();
       const now = Date.now();
       if (isBanned(ip) || now - (typingAt.get(ip) || 0) < 1500) return;
       try {
-        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), nick = clean(m.nick, 20);
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), user = auth.session(req);
+        const nick = user ? user.name : clean(m.nick, 20);
         const r = rooms.get(name);
         if (!r || !nick || closed.has(name) || ![...r.clients].some(c => c.ip === ip)) return;   // must be in the room
+        if (!user && await auth.nameReserved(nick)) return;
         typingAt.set(ip, now);
-        const data = `data: ${JSON.stringify({ typing: true, nick, uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, '') })}\n\n`;
+        const data = `data: ${JSON.stringify({ typing: true, nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, '') })}\n\n`;
         r.clients.forEach(c => c.write(data));
       } catch {}
     });
@@ -324,9 +407,12 @@ http.createServer((req, res) => {
   if (url.pathname === '/dm' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       try {
-        const m = JSON.parse(body), from = iidOf(m.dk), to = String(m.to || '');
+        const m = JSON.parse(body), { user, iid: from } = who(req, m), to = String(m.to || '');
         let text = clean(m.text, 500);
-        if (!from || !okIid(to) || to === from || !text) return json(res, 400, { error: 'bad request' });
+        const imgId = m.img ? String(m.img) : '';
+        if (!from || !okIid(to) || to === from || (!text && !imgId)) return json(res, 400, { error: 'bad request' });
+        if (imgId && !user) return json(res, 403, { error: 'login' });
+        if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });
         if (isBanned(ip)) return json(res, 403, { error: 'banned' });
         const mine = liveByIid(from);
         if (!mine.length) return json(res, 403, { error: 'not online' });   // you must be connected to a room
@@ -352,9 +438,9 @@ http.createServer((req, res) => {
         pair.t = now;
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
         const id = crypto.randomUUID().slice(0, 8);
-        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now });
+        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}) });
         if (dmLog.size > 1000) dmLog.delete(dmLog.keys().next().value);
-        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request } })}\n\n`;
+        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request, ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}) } })}\n\n`;
         targets.forEach(c => c.write(data));
         json(res, 200, { id, t: now });
       } catch { json(res, 400, { error: 'bad request' }); }
@@ -364,7 +450,7 @@ http.createServer((req, res) => {
   if (url.pathname === '/dm/accept' && req.method === 'POST') {
     return readBody(req, 500, body => {
       try {
-        const m = JSON.parse(body), me = iidOf(m.dk), other = String(m.from || '');
+        const m = JSON.parse(body), me = who(req, m).iid, other = String(m.from || '');
         const pair = okIid(other) && me ? dmPairs.get([me, other].sort().join(':')) : null;
         if (pair && pair.to === me) pair.accepted = true;
         res.writeHead(204); res.end();
@@ -375,7 +461,7 @@ http.createServer((req, res) => {
   if (url.pathname === '/dm/block' && req.method === 'POST') {
     return readBody(req, 4000, body => {
       try {
-        const m = JSON.parse(body), me = iidOf(m.dk);
+        const m = JSON.parse(body), me = who(req, m).iid;
         if (!me) { res.writeHead(400); return res.end(); }
         const set = dmBlocks.get(me) || new Set();
         (Array.isArray(m.add) ? m.add : []).slice(0, 200).forEach(i => { if (okIid(String(i)) && set.size < 300) set.add(String(i)); });
@@ -394,7 +480,7 @@ http.createServer((req, res) => {
         let src = sent.get(id);
         if (!src) {   // a private message can only be reported by the person it was sent to
           const d = dmLog.get(id);
-          if (d && iidOf(b.dk) === d.to) src = { ip: d.ip, room: 'dm', nick: d.fromNick, text: d.text, t: d.t, dm: true };
+          if (d && who(req, b).iid === d.to) src = { ip: d.ip, room: 'dm', nick: d.fromNick, text: d.text, t: d.t, dm: true, ...(d.acct ? { acct: d.acct } : {}), ...(d.img ? { img: d.img } : {}) };
         }
         if (!src) return;   // we only trust our own copy of the message, not what the client sends
         const open = reports.find(r => r.msgId === id && r.status === 'open');
@@ -402,12 +488,12 @@ http.createServer((req, res) => {
         reports.unshift({ rid: crypto.randomUUID().slice(0, 8), msgId: id, ...src, count: 1, reporters: [ip], status: 'open', at: Date.now() });
         if (reports.length > 200) reports.pop();
         touch('reports');
-        console.log('REPORT', src.room, src.nick, src.text.slice(0, 100));
+        console.log('REPORT', src.room, src.nick, src.img ? '[image]' : src.text.slice(0, 100));
       } catch {}
     });
   }
   res.writeHead(404); res.end('Not found');
-}).listen(PORT, () => console.log('JenChat running on port ' + PORT + (ADMIN_TOKEN ? '' : ' (admin disabled: set ADMIN_TOKEN)')));
+}
 
 setInterval(() => {
   const n = Date.now();
