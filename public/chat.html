@@ -58,17 +58,21 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
  $('side').classList.remove('open')}
 function notice(t){const d=el('div',t,'sys');$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
 
-function add(m){const box=$('msgs');
- if(m.system){const d=el('div',m.text,'sys');
-  if(m.users){users=m.users;renderUsers()}
-  box.append(d);box.scrollTop=box.scrollHeight;return}
- if(m.uid&&blocked[m.uid])return;
- const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
- const b=el('b',m.nick);d.append(b);
- if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
- const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
- rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
- if(m.isImage){
+function add(m){
+  const box=$('msgs');
+  if(m.system){
+    const d=el('div',m.text,'sys');
+    if(m.users){users=m.users;renderUsers()}
+    box.append(d);box.scrollTop=box.scrollHeight;return;
+  }
+  if(m.uid&&blocked[m.uid])return;
+  const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
+  const b=el('b',m.nick);d.append(b);
+  if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
+  const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
+  rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
+  
+  if(m.isImage){
     const img=document.createElement('img');
     img.src=m.text;
     img.style.maxWidth='100%';
@@ -79,6 +83,7 @@ function add(m){const box=$('msgs');
     d.append(rp,el('div',m.text));
   }
   box.append(d);box.scrollTop=box.scrollHeight;
+} // <--- Yeh closing bracket zaroori tha jo miss ho gaya tha!
 
 // ---- users panel, block, kick ----
 function renderUsers(){
