@@ -317,5 +317,7 @@ http.createServer((req, res) => {
     });
   }
 
-  res.writeHead(404); res.end('Not found');
+  if (!res.headersSent) {
+    res.writeHead(404); res.end('Not found');
+  }
 }).listen(PORT, () => console.log('JenChat running on port ' + PORT));
