@@ -1,4 +1,4 @@
-// JenChat - zero-dependency guest chat server with Registration, DMs, Reports, Admin Data, Image Sharing & Deletion (Node 18+)
+// JenChat - zero-dependency guest chat server with Registration, DMs, Reports, Admin Data, Image Sharing & Persistent Deletion (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
@@ -198,7 +198,7 @@ http.createServer((req, res) => {
           }
         }
         res.writeHead(204); res.end();
-      } catch { json(res, 400, { error: 'Bad request' }); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
@@ -210,7 +210,7 @@ http.createServer((req, res) => {
         const { ip: targetIp } = JSON.parse(body);
         if (targetIp) bans.set(targetIp, Date.now() + 86400000);
         res.writeHead(204); res.end();
-      } catch { json(res, 400, { error: 'Bad request' }); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
@@ -223,10 +223,11 @@ http.createServer((req, res) => {
         if (!set) { set = new Set(); dmBlocks.set(me, set); }
         if (m.block) set.add(target); else set.delete(target);
         json(res, 200, { ok: true, blocked: m.block });
-      } catch { json(res, 400, { error: 'Bad request' }); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
+  // --- PERSISTENT IMAGE / MESSAGE DELETION FIX ---
   if (url.pathname === '/img/delete' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -236,25 +237,37 @@ http.createServer((req, res) => {
         const msg = sent.get(msgId);
         if (!msg || msg.userId !== user.id) return json(res, 403, { error: 'Unauthorized' });
 
-        msg.text = '[Image deleted by user]'; msg.isImage = false; msg.deleted = true;
+        // Update central tracking object
+        msg.text = '[Image deleted by user]'; 
+        msg.isImage = false; 
+        msg.deleted = true;
 
-        const r = rooms.get(msg.room);
-        if (r) {
-          r.history.forEach(h => { if (h.id === msgId) { h.text = '[Image deleted by user]'; h.isImage = false; h.deleted = true; } });
+        // Update Public Room persistent history memory
+        for (const r of rooms.values()) {
+          r.history.forEach(h => {
+            if (h.id === msgId) { 
+              h.text = '[Image deleted by user]'; 
+              h.isImage = false; 
+              h.deleted = true; 
+            }
+          });
           const delEvent = `data: ${JSON.stringify({ imgdel: msgId })}\n\n`;
           r.clients.forEach(c => c.write(delEvent));
         }
 
+        // Update DM persistent memory
         const dmMsg = dmLog.get(msgId);
         if (dmMsg) {
-          dmMsg.text = '[Image deleted by user]'; dmMsg.isImage = false; dmMsg.deleted = true;
+          dmMsg.text = '[Image deleted by user]'; 
+          dmMsg.isImage = false; 
+          dmMsg.deleted = true;
           const delEvent = `data: ${JSON.stringify({ dmdel: msgId })}\n\n`;
           liveByIid(dmMsg.from).forEach(c => c.write(delEvent));
           liveByIid(dmMsg.to).forEach(c => c.write(delEvent));
         }
 
         res.writeHead(204); res.end();
-      } catch { json(res, 400, { error: 'Bad request' }); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
@@ -302,8 +315,8 @@ http.createServer((req, res) => {
         const nick = user ? user.name : clean(m.nick, 20);
         if (!okRoom(name) || !text || !nick || closed.has(name)) { res.writeHead(400); return res.end(); }
 
-        const msg = { id: crypto.randomUUID().slice(0, 8), nick, ip, userId: user ? user.id : '', uid: user ? user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, isImage: !!m.isImage, t: Date.now() };
-        sent.set(msg.id, { ip, room: name, nick, text, userId: user ? user.id : '', isImage: !!m.isImage, t: msg.t });
+        const msg = { id: crypto.randomUUID().slice(0, 8), nick, ip, userId: user ? user.id : '', uid: user ? user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, isImage: !!m.isImage, deleted: false, t: Date.now() };
+        sent.set(msg.id, msg);
         broadcast(name, msg);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
@@ -338,10 +351,11 @@ http.createServer((req, res) => {
         }
         pair.t = now;
         const id = crypto.randomUUID().slice(0, 8);
-        dmLog.set(id, { id, ip, from, to, userId: user ? user.id : '', text, isImage: !!m.isImage, t: now });
-        sent.set(id, { userId: user ? user.id : '', room: '', text, isImage: !!m.isImage, t: now, ip });
+        const msgObj = { id, ip, from, to, userId: user ? user.id : '', text, isImage: !!m.isImage, deleted: false, t: now };
+        dmLog.set(id, msgObj);
+        sent.set(id, msgObj);
 
-        const data = `data: ${JSON.stringify({ dm: { id, from, userId: user ? user.id : '', nick: mine[0].nick, text, isImage: !!m.isImage, t: now, request } })}\n\n`;
+        const data = `data: ${JSON.stringify({ dm: { id, from, userId: user ? user.id : '', nick: mine[0].nick, text, isImage: !!m.isImage, deleted: false, t: now, request } })}\n\n`;
         liveByIid(from).forEach(c => c.write(data));
         targets.forEach(c => c.write(data));
         json(res, 200, { id, t: now });
