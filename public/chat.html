@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css">
 <style>
-#users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 240px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+#users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 260px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 #users .urow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
 #dms { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; width: 340px; height: 450px; z-index: 100; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 .dmbody { overflow-y: auto; padding: 10px; flex: 1; }
@@ -259,14 +259,18 @@ const threads = new Map(); let curThread = '';
 const dmCall = (path, body) => fetch(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dk, ...body }) });
 function thread(iid, name){ let t = threads.get(iid); if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false};threads.set(iid,t)} if(name)t.nick=name; return t; }
 function updateBadge(){ let n = 0; threads.forEach(t => n += t.unread); const b = $('dmbadge'); b.hidden = !n; b.textContent = n; }
+
 function onDm(m){
   if(dmBlocked[m.from]) return;
+  if(currentUser && m.userId === currentUser.id) return; // Prevent duplicate display on sender's own screen
+  
   const t = thread(m.from, m.nick), first = !t.msgs.length;
-  t.msgs.push({ id: m.id, userId: m.userId, mine: currentUser ? m.userId === currentUser.id : false, text: m.text, isImage: !!m.isImage, t: m.t });
+  t.msgs.push({ id: m.id, userId: m.userId, mine: false, text: m.text, isImage: !!m.isImage, t: m.t });
   if(first && m.request) t.request = true;
   if($('dms').hidden || curThread !== m.from){ t.unread++; }
   updateBadge(); renderDms();
 }
+
 function showDms(iid){
   closePanels(); $('dms').hidden = false; $('dmbtn').setAttribute('aria-expanded','true'); curThread = iid || '';
   if(iid){ thread(iid).unread = 0; updateBadge(); } renderDms();
