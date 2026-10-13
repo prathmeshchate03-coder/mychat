@@ -158,16 +158,40 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
    d.append(el('div',m.text));
   }
   body.append(d);
- });
- const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
+ }); const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
  if(t.request){const bar=el('div','','dmreq'),ac=el('button','Accept','sm');bar.append(el('span',t.nick+' wants to message you.'));
   ac.onclick=()=>{t.request=false;dmCall('/dm/accept',{from:t.iid});renderDms()};bar.append(ac);body.append(bar)}
  if(waiting)body.append(el('p','Waiting for '+t.nick+' to accept your message.','mut'));
- const f=el('div','','dmform'),inp=el('input'),sb=el('button','Send');
+ const f=el('div','','dmform');
+ const imgBtn=el('label','📷','ghost'); imgBtn.style.cursor='pointer'; imgBtn.style.padding='8px 10px'; imgBtn.title='Send Image';
+ const imgInp=document.createElement('input'); imgInp.type='file'; imgInp.accept='image/*'; imgInp.hidden=true;
+ 
+ imgInp.onchange=(e)=>{
+  const file=e.target.files[0];
+  if(!file)return;
+  if(file.size>500000){alert('Image size 500KB se kam honi chahiye.');return;}
+  const reader=new FileReader();
+  reader.onload=(pe)=>{
+   const base64Img=pe.target.result;
+   dmCall('/dm',{to:t.iid,text:base64Img,isImage:true}).then(async r=>{
+    if(r.ok){
+     const j=await r.json().catch(()=>({}));
+     t.msgs.push({id:j.id||'',mine:true,text:base64Img,isImage:true,t:j.t||Date.now()});
+     t.request=false;renderDms();
+    }else{
+     dmNote('Image nahi bheji ja saki.');
+    }
+   }).catch(()=>dmNote('Network error.'));
+  };
+  reader.readAsDataURL(file);
+ };
+ imgBtn.onclick=()=>imgInp.click();
+
+ const inp=el('input'),sb=el('button','Send');
  inp.type='text';inp.id='dmtext';inp.maxLength=500;inp.placeholder='Private message';inp.autocomplete='off';inp.setAttribute('aria-label','Private message');inp.value=keep;
  sb.onclick=()=>sendDm(t,inp);inp.onkeydown=e=>{if(e.key==='Enter')sendDm(t,inp)};
- if(waiting){inp.disabled=true;sb.disabled=true}
- f.append(inp,sb);p.append(h,body,f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
+ if(waiting){inp.disabled=true;sb.disabled=true;imgInp.disabled=true;}
+ f.append(imgBtn,imgInp,inp,sb);
 function dmNote(text){const b=$('dmmsgs');if(b){b.append(el('p',text,'dmerr'));b.scrollTop=b.scrollHeight}}
 function sendDm(t,inp){const text=inp.value.trim();if(!text)return;inp.value='';
  dmCall('/dm',{to:t.iid,text}).then(async r=>{
