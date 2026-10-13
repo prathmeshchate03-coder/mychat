@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css">
 <style>
-#users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 260px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+#users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 280px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 #users .urow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
 #dms { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; width: 340px; height: 450px; z-index: 100; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 .dmbody { overflow-y: auto; padding: 10px; flex: 1; }
@@ -10,6 +10,10 @@
 .dmform input[type="text"] { flex: 1; padding: 6px; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 .dmrow { padding: 8px; cursor: pointer; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
 .dmrow:hover { background: rgba(255,255,255,0.05); }
+.badge-role { font-size:10px; padding:2px 5px; border-radius:4px; margin-left:4px; text-transform:uppercase; font-weight:bold; }
+.role-owner { background:#ffd60a; color:#000; }
+.role-coadmin { background:#00b4d8; color:#fff; }
+.role-mod { background:#2a9d8f; color:#fff; }
 </style>
 </head><body>
 <div id="gate" style="max-width:400px;margin:40px auto;padding:20px;background:var(--bg2);border-radius:12px">
@@ -60,6 +64,7 @@
   <div id="head">
     <button id="menu" class="ghost" aria-label="Rooms">Rooms</button>
     <b id="rname"></b>
+    <button id="bgBtn" class="ghost sm" title="Change Room Background">🎨 BG</button>
     <button id="dmbtn" class="ghost" aria-expanded="false" aria-controls="dms">Messages<span id="dmbadge" hidden></span></button>
     <button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button>
   </div>
@@ -82,7 +87,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let nick = localStorage.nick, room, es, otok = '', currentUser = null, users = [], myIid = '';
+let nick = localStorage.nick, room, es, otok = '', currentUser = null, users = [], myIid = '', myRole = 'member';
 let uid = localStorage.uid; if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
 let dk = localStorage.dk; if(!/^[a-f0-9]{32}$/.test(dk||'')){dk=[...crypto.getRandomValues(new Uint8Array(16))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.dk=dk}
 let dmBlocked = {}; try{dmBlocked=JSON.parse(localStorage.dmBlocked||'{}')||{}}catch{}
@@ -149,28 +154,54 @@ function startChat(name){
   loadRooms(); setInterval(loadRooms, 5000);
 }
 
+function applyRoomBg(bg){
+  const main = $('msgs');
+  if(!bg){ main.style.background = ''; main.style.backgroundImage = ''; return; }
+  if(bg.startsWith('http') || bg.startsWith('data:')){
+    main.style.backgroundImage = `url('${bg}')`;
+    main.style.backgroundSize = 'cover';
+    main.style.backgroundPosition = 'center';
+  } else {
+    main.style.backgroundImage = '';
+    main.style.background = bg;
+  }
+}
+
+$('bgBtn').onclick = () => {
+  if(!['owner', 'co-admin', 'mod'].includes(myRole)){
+    return alert('Only Room Owner, Co-Admin, or Moderator can change room background.');
+  }
+  const bg = prompt('Enter background color (e.g. #111, crimson) or Image URL:');
+  if(bg === null) return;
+  fetch('/room/bg', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ room, background: bg })
+  }).then(r => { if(!r.ok) alert('Unauthorized to change BG.'); });
+};
+
 function join(name){
   room = name; location.hash = name; $('rname').textContent = '#' + name; $('msgs').innerHTML = '';
   users = []; closePanels(); $('cnt').hidden = true;
+  applyRoomBg('');
   if(es) es.close();
   es = new EventSource('/events?room=' + name + '&nick=' + encodeURIComponent(nick) + '&uid=' + uid + '&dk=' + dk);
   es.onmessage = e => {
     const d = JSON.parse(e.data);
-    if(d.you) myIid = d.you.iid;
+    if(d.you) { myIid = d.you.iid; if(d.you.role) myRole = d.you.role; }
     
     if(d.history){
+      if(d.background) applyRoomBg(d.background);
       $('msgs').innerHTML = ''; d.history.forEach(add);
+    }
+    else if(d.roomBg){
+      applyRoomBg(d.roomBg);
     }
     else if(d.imgdel || d.dmdel){
       const msgId = d.imgdel || d.dmdel;
-      // Update persistent threads memory so re-opening DM reflects deletion
       threads.forEach(t => {
         t.msgs.forEach(m => {
-          if(m.id === msgId) {
-            m.text = '[Image deleted by user]';
-            m.isImage = false;
-            m.deleted = true;
-          }
+          if(m.id === msgId) { m.text = '[Image deleted by user]'; m.isImage = false; m.deleted = true; }
         });
       });
       const elMsg = document.querySelector(`[data-id="${msgId}"]`);
@@ -181,6 +212,7 @@ function join(name){
       }
     }
     else if(d.dm) onDm(d.dm);
+    else if(d.dmbg) onDmBg(d.dmbg);
     else add(d);
   };
 }
@@ -231,6 +263,17 @@ function add(m){
   box.append(d); box.scrollTop = box.scrollHeight;
 }
 
+function assignRole(targetUid, role) {
+  fetch('/room/staff', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ room, targetUid, role })
+  }).then(r => r.json()).then(d => {
+    if(d.ok) alert('Staff role updated!');
+    else alert(d.error || 'Failed to update role');
+  });
+}
+
 function toggleBlockUser(targetIid) {
   const isBlocked = !!dmBlocked[targetIid];
   fetch('/dm/block', {
@@ -250,25 +293,48 @@ function renderUsers(){
   const p = $('users'); p.innerHTML = '';
   users.forEach(u => {
     const row = el('div', '', 'urow');
-    row.append(el('span', u.nick, 'un'));
+    const nickSpan = el('span', u.nick, 'un');
+    
+    // Add Role Badge
+    if(u.role && u.role !== 'member'){
+      const badge = el('span', u.role, 'badge-role role-' + u.role.replace('-',''));
+      nickSpan.append(badge);
+    }
+    row.append(nickSpan);
+
+    const wrap = document.createElement('div');
     if(u.iid && u.iid !== myIid){
-      const wrap = document.createElement('div');
-      const mb = el('button', 'Message', 'ghost sm'); mb.onclick = () => openDm(u.iid, u.nick);
+      const mb = el('button', 'Msg', 'ghost sm'); mb.onclick = () => openDm(u.iid, u.nick);
       const bb = el('button', dmBlocked[u.iid] ? 'Unblock' : 'Block', 'ghost sm');
       bb.style.color = dmBlocked[u.iid] ? '#4caf50' : '#ff4949';
       bb.onclick = () => toggleBlockUser(u.iid);
       wrap.append(mb, bb);
-      row.append(wrap);
     }
+
+    // Owner only Staff Assign dropdown
+    if(myRole === 'owner' && u.uid && u.uid !== currentUser.id){
+      const sel = document.createElement('select');
+      sel.style.fontSize = '11px'; sel.style.padding = '2px'; sel.style.marginLeft = '4px';
+      sel.innerHTML = `
+        <option value="none" ${u.role==='member'?'selected':''}>Member</option>
+        <option value="co-admin" ${u.role==='co-admin'?'selected':''}>Co-Admin</option>
+        <option value="mod" ${u.role==='mod'?'selected':''}>Mod</option>
+      `;
+      sel.onchange = (e) => assignRole(u.uid, e.target.value);
+      wrap.append(sel);
+    }
+
+    row.append(wrap);
     p.append(row);
   });
 }
+
 function closePanels(){ $('users').hidden = true; $('dms').hidden = true; $('cnt').setAttribute('aria-expanded','false');$('dmbtn').setAttribute('aria-expanded','false'); }
 $('cnt').onclick = () => { const open =$('users').hidden; closePanels(); $('users').hidden = !open; $('cnt').setAttribute('aria-expanded', String(open)); };
 
 const threads = new Map(); let curThread = '';
 const dmCall = (path, body) => fetch(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dk, ...body }) });
-function thread(iid, name){ let t = threads.get(iid); if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false};threads.set(iid,t)} if(name)t.nick=name; return t; }
+function thread(iid, name){ let t = threads.get(iid); if(!t){t={iid,nick:name||'Guest',msgs:[],background:'',unread:0,request:false};threads.set(iid,t)} if(name)t.nick=name; return t; }
 function updateBadge(){ let n = 0; threads.forEach(t => n += t.unread); const b = $('dmbadge'); b.hidden = !n; b.textContent = n; }
 
 function onDm(m){
@@ -276,10 +342,33 @@ function onDm(m){
   if(m.from === myIid || (currentUser && m.userId === currentUser.id)) return;
   
   const t = thread(m.from, m.nick), first = !t.msgs.length;
+  if(m.background) t.background = m.background;
   t.msgs.push({ id: m.id, userId: m.userId, mine: false, text: m.text, isImage: !!m.isImage, deleted: !!m.deleted, t: m.t });
   if(first && m.request) t.request = true;
   if($('dms').hidden || curThread !== m.from){ t.unread++; }
   updateBadge(); renderDms();
+}
+
+function onDmBg(data){
+  const t = threads.get(data.from);
+  if(t){
+    t.background = data.background;
+    if(curThread === data.from) applyDmBg(data.background);
+  }
+}
+
+function applyDmBg(bg){
+  const body = document.getElementById('dmmsgs');
+  if(!body) return;
+  if(!bg){ body.style.background = ''; body.style.backgroundImage = ''; return; }
+  if(bg.startsWith('http') || bg.startsWith('data:')){
+    body.style.backgroundImage = `url('${bg}')`;
+    body.style.backgroundSize = 'cover';
+    body.style.backgroundPosition = 'center';
+  } else {
+    body.style.backgroundImage = '';
+    body.style.background = bg;
+  }
 }
 
 function showDms(iid){
@@ -307,8 +396,24 @@ function renderDms(){
     p.append(h, body); return;
   }
   const t = thread(curThread), h = el('div', '', 'dmhead'), back = el('button', 'Back', 'ghost sm');
-  back.onclick = () => { curThread = ''; renderDms(); }; h.append(back, el('b', t.nick));
+  back.onclick = () => { curThread = ''; renderDms(); }; 
+
+  const dmBgBtn = el('button', '🎨 BG', 'ghost sm');
+  dmBgBtn.onclick = () => {
+    const bg = prompt('Enter DM background color or Image URL:');
+    if(bg === null) return;
+    dmCall('/dm/bg', { to: t.iid, background: bg }).then(() => {
+      t.background = bg;
+      applyDmBg(bg);
+    });
+  };
+
+  const titleWrap = document.createElement('div'); titleWrap.style.display = 'flex'; titleWrap.style.alignItems = 'center'; titleWrap.style.gap = '8px';
+  titleWrap.append(el('b', t.nick), dmBgBtn);
+  h.append(back, titleWrap);
+
   const body = el('div', '', 'dmbody'); body.id = 'dmmsgs';
+  applyDmBg(t.background);
   
   t.msgs.forEach(m => {
     const mine = currentUser ? m.userId === currentUser.id : m.mine;
