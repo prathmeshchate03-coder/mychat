@@ -1,10 +1,9 @@
-// JenChat - zero-dependency guest chat server with Unique Username & JSON Persistence (Node 18+)
+// JenChat - zero-dependency guest chat server with Room Roles (Owner, Co-Admin, Mod) & Shared Background Permissions (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
 const rooms = new Map(), hits = new Map(), conns = new Map();
 
-// Persistent User Storage via JSON file
 const USERS_FILE = path.join(__dirname, 'users.json');
 const registeredUsers = new Map();
 if (fs.existsSync(USERS_FILE)) {
@@ -44,19 +43,48 @@ function liveByIid(iid) {
   return out;
 }
 
-function room(name) {
-  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', kicked: new Map() });
-  return rooms.get(name);
+function room(name, creatorUserId) {
+  if (!rooms.has(name)) {
+    rooms.set(name, {
+      clients: new Set(),
+      history: [],
+      background: '',
+      ownerId: creatorUserId || '',
+      staff: new Map() // userId -> 'co-admin' | 'mod'
+    });
+  }
+  const r = rooms.get(name);
+  if (!r.ownerId && creatorUserId) r.ownerId = creatorUserId;
+  return r;
+}
+
+function getUserRole(r, userId) {
+  if (!userId) return 'member';
+  if (r.ownerId === userId) return 'owner';
+  return r.staff.get(userId) || 'member';
 }
 
 function sys(name, text) {
-  const r = room(name);
-  broadcast(name, { system: true, text, count: r.clients.size,
-    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, reg: !!c.reg })) });
+  const r = rooms.get(name);
+  if (!r) return;
+  broadcast(name, {
+    system: true,
+    text,
+    count: r.clients.size,
+    users: [...r.clients].map(c => ({
+      id: c.cid,
+      uid: c.uid,
+      iid: c.iid,
+      nick: c.nick,
+      reg: c.reg,
+      role: getUserRole(r, c.uid)
+    }))
+  });
 }
 
 function broadcast(name, msg) {
-  const r = room(name);
+  const r = rooms.get(name);
+  if (!r) return;
   if (!msg.system) { r.history.push(msg); if (r.history.length > 50) r.history.shift(); }
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   r.clients.forEach(c => c.write(data));
@@ -105,26 +133,19 @@ http.createServer((req, res) => {
         const cleanEmail = clean(email, 50).toLowerCase();
         const cleanName = clean(name, 20);
         const cleanPass = String(password || '');
-
         if (!cleanEmail || !cleanPass || !cleanName || cleanPass.length < 6) {
           return json(res, 400, { error: 'Invalid details or password too short (min 6 chars)' });
         }
-        if (registeredUsers.has(cleanEmail)) {
-          return json(res, 400, { error: 'Email already registered' });
-        }
-
+        if (registeredUsers.has(cleanEmail)) return json(res, 400, { error: 'Email already registered' });
         for (const user of registeredUsers.values()) {
           if (user.name.toLowerCase() === cleanName.toLowerCase()) {
             return json(res, 400, { error: 'Username already taken. Please choose another.' });
           }
         }
-
         const verifyCode = Math.floor(100000 + Math.random() * 900000).toString();
         const userId = crypto.randomUUID().slice(0, 12);
         registeredUsers.set(cleanEmail, { id: userId, name: cleanName, email: cleanEmail, passHash: sha(cleanPass), verified: false, code: verifyCode, t: Date.now() });
         saveUsers();
-
-        console.log(`Verification code for ${cleanEmail}: ${verifyCode}`);
         json(res, 200, { ok: true, message: 'Registration successful', debugCode: verifyCode });
       } catch { json(res, 400, { error: 'Bad request' }); }
     });
@@ -150,16 +171,13 @@ http.createServer((req, res) => {
         const { email, password } = JSON.parse(body);
         const inputStr = clean(email, 50).toLowerCase();
         let user = registeredUsers.get(inputStr);
-
         if (!user) {
           for (const u of registeredUsers.values()) {
             if (u.name.toLowerCase() === inputStr) { user = u; break; }
           }
         }
-
         if (!user || user.passHash !== sha(String(password || ''))) return json(res, 400, { error: 'Invalid email/username or password' });
         if (!user.verified) return json(res, 403, { error: 'Email not verified.' });
-
         const sessionId = crypto.randomUUID();
         activeSessions.set(sessionId, user.email);
         res.setHeader('Set-Cookie', `session=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`);
@@ -182,6 +200,67 @@ http.createServer((req, res) => {
     res.writeHead(204); res.end(); return;
   }
 
+  // --- Assign Staff Role (Co-Admin / Moderator) ---
+  if (url.pathname === '/room/staff' && req.method === 'POST') {
+    return readBody(req, 1000, body => {
+      try {
+        const user = getSessionUser(req);
+        if (!user) return json(res, 401, { error: 'Login required' });
+        const { room: roomName, targetUid, role } = JSON.parse(body);
+        const r = rooms.get(roomName);
+        if (!r) return json(res, 404, { error: 'Room not found' });
+        
+        if (r.ownerId !== user.id) {
+          return json(res, 403, { error: 'Only room owner can assign staff roles' });
+        }
+
+        if (role === 'none') r.staff.delete(targetUid);
+        else if (['co-admin', 'mod'].includes(role)) r.staff.set(targetUid, role);
+
+        sys(roomName, `Staff roles updated by owner`);
+        json(res, 200, { ok: true });
+      } catch { json(res, 400, { error: 'Bad request' }); }
+    });
+  }
+
+  // --- Room Background Endpoint (Owner / Co-Admin / Mod only) ---
+  if (url.pathname === '/room/bg' && req.method === 'POST') {
+    return readBody(req, 200000, body => {
+      try {
+        const user = getSessionUser(req);
+        const { room: roomName, background } = JSON.parse(body);
+        const r = rooms.get(roomName);
+        if (!r) return json(res, 404, { error: 'Room not found' });
+
+        const role = getUserRole(r, user ? user.id : '');
+        if (!['owner', 'co-admin', 'mod'].includes(role)) {
+          return json(res, 403, { error: 'Only Owner, Co-Admin, or Moderator can change room background.' });
+        }
+
+        r.background = String(background || '');
+        const bgEvent = `data: ${JSON.stringify({ roomBg: r.background })}\n\n`;
+        r.clients.forEach(c => c.write(bgEvent));
+        res.writeHead(204); res.end();
+      } catch { json(res, 400, { error: 'Bad request' }); }
+    });
+  }
+
+  if (url.pathname === '/dm/bg' && req.method === 'POST') {
+    return readBody(req, 200000, body => {
+      try {
+        const m = JSON.parse(body), from = iidOf(m.dk), to = String(m.to || '');
+        const key = [from, to].sort().join(':');
+        const pair = dmPairs.get(key);
+        if (!pair) return json(res, 404, { error: 'DM thread not found' });
+        pair.background = String(m.background || '');
+        const data = `data: ${JSON.stringify({ dmbg: { from, background: pair.background } })}\n\n`;
+        liveByIid(from).forEach(c => c.write(data));
+        liveByIid(to).forEach(c => c.write(data));
+        res.writeHead(204); res.end();
+      } catch { json(res, 400); res.end(); }
+    });
+  }
+
   if (url.pathname === '/report' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -190,20 +269,11 @@ http.createServer((req, res) => {
         let msg = r ? r.history.find(h => h.id === id) : null;
         if (!msg) msg = sent.get(id);
         if (msg) {
-          reports.push({
-            id: msg.id || id,
-            room: roomName || 'Global',
-            nick: msg.nick || 'Unknown',
-            text: msg.isImage ? '[Image Shared]' : msg.text,
-            t: Date.now(),
-            ip: msg.ip || ip
-          });
+          reports.push({ id: msg.id || id, room: roomName || 'Global', nick: msg.nick || 'Unknown', text: msg.isImage ? '[Image Shared]' : msg.text, t: Date.now(), ip: msg.ip || ip });
           if (reports.length > 200) reports.shift();
           json(res, 200, { ok: true, message: 'Report submitted successfully' });
-        } else {
-          json(res, 404, { error: 'Message not found to report' });
-        }
-      } catch { json(res, 400, { error: 'Bad request' }); }
+        } else { json(res, 404, { error: 'Message not found' }); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
@@ -211,12 +281,7 @@ http.createServer((req, res) => {
     const auth = req.headers['authorization'] || '';
     const token = auth.replace('Bearer ', '').trim();
     if (ADMIN_TOKEN && token !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
-
-    const liveRoomsList = [...rooms.entries()].map(([name, r]) => ({
-      name,
-      count: r.clients.size,
-      users: [...r.clients].map(c => c.nick)
-    }));
+    const liveRoomsList = [...rooms.entries()].map(([name, r]) => ({ name, count: r.clients.size, users: [...r.clients].map(c => c.nick) }));
     const bannedList = [...bans.entries()].map(([bip, exp]) => ({ ip: bip, exp }));
     json(res, 200, { reports, rooms: liveRoomsList, closed: [...closed.keys()], banned: bannedList });
   }
@@ -227,14 +292,7 @@ http.createServer((req, res) => {
       if (ADMIN_TOKEN && auth.replace('Bearer ', '').trim() !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
       try {
         const { room: roomName } = JSON.parse(body);
-        if (roomName) {
-          closed.set(roomName, true);
-          const r = rooms.get(roomName);
-          if (r) {
-            broadcast(roomName, { system: true, text: 'This room has been closed by admin.' });
-            rooms.delete(roomName);
-          }
-        }
+        if (roomName) { closed.set(roomName, true); rooms.delete(roomName); }
         res.writeHead(204); res.end();
       } catch { json(res, 400); res.end(); }
     });
@@ -274,32 +332,19 @@ http.createServer((req, res) => {
         const msg = sent.get(msgId);
         if (!msg || msg.userId !== user.id) return json(res, 403, { error: 'Unauthorized' });
 
-        msg.text = '[Image deleted by user]'; 
-        msg.isImage = false; 
-        msg.deleted = true;
-
+        msg.text = '[Image deleted by user]'; msg.isImage = false; msg.deleted = true;
         for (const r of rooms.values()) {
-          r.history.forEach(h => {
-            if (h.id === msgId) { 
-              h.text = '[Image deleted by user]'; 
-              h.isImage = false; 
-              h.deleted = true; 
-            }
-          });
+          r.history.forEach(h => { if (h.id === msgId) { h.text = '[Image deleted by user]'; h.isImage = false; h.deleted = true; } });
           const delEvent = `data: ${JSON.stringify({ imgdel: msgId })}\n\n`;
           r.clients.forEach(c => c.write(delEvent));
         }
-
         const dmMsg = dmLog.get(msgId);
         if (dmMsg) {
-          dmMsg.text = '[Image deleted by user]'; 
-          dmMsg.isImage = false; 
-          dmMsg.deleted = true;
+          dmMsg.text = '[Image deleted by user]'; dmMsg.isImage = false; dmMsg.deleted = true;
           const delEvent = `data: ${JSON.stringify({ dmdel: msgId })}\n\n`;
           liveByIid(dmMsg.from).forEach(c => c.write(delEvent));
           liveByIid(dmMsg.to).forEach(c => c.write(delEvent));
         }
-
         res.writeHead(204); res.end();
       } catch { json(res, 400); res.end(); }
     });
@@ -324,16 +369,17 @@ http.createServer((req, res) => {
     res.uid = user ? user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
     res.iid = iidOf(url.searchParams.get('dk'));
 
+    const rObj = room(name, user ? user.id : '');
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: room(name).history, you: { id: res.cid, iid: res.iid, reg: res.reg, uid: res.uid } })}\n\n`);
-    room(name).clients.add(res);
+    res.write(`data: ${JSON.stringify({ history: rObj.history, background: rObj.background, you: { id: res.cid, iid: res.iid, reg: res.reg, uid: res.uid, role: getUserRole(rObj, res.uid) } })}\n\n`);
+    rObj.clients.add(res);
     sys(name, `${finalNick} joined`);
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
     req.on('close', () => {
-      clearInterval(ping); room(name).clients.delete(res);
+      clearInterval(ping); rObj.clients.delete(res);
       conns.set(ip, Math.max(0, (conns.get(ip) || 1) - 1));
       sys(name, `${finalNick} left`);
-      if (!room(name).clients.size) setTimeout(() => { if (!room(name).clients.size) rooms.delete(name); }, 600000);
+      if (!rObj.clients.size) setTimeout(() => { if (!rObj.clients.size) rooms.delete(name); }, 600000);
     });
     return;
   }
@@ -378,7 +424,7 @@ http.createServer((req, res) => {
 
         const key = [from, to].sort().join(':'), now = Date.now();
         let pair = dmPairs.get(key), request = false;
-        if (!pair) { pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true; }
+        if (!pair) { pair = { from, to, accepted: false, background: '', t: now }; dmPairs.set(key, pair); request = true; }
         else if (!pair.accepted) {
           if (pair.from === from) return json(res, 409, { error: 'pending' });
           pair.accepted = true;
@@ -389,10 +435,10 @@ http.createServer((req, res) => {
         dmLog.set(id, msgObj);
         sent.set(id, msgObj);
 
-        const data = `data: ${JSON.stringify({ dm: { id, from, userId: user ? user.id : '', nick: mine[0].nick, text, isImage: !!m.isImage, deleted: false, t: now, request } })}\n\n`;
+        const data = `data: ${JSON.stringify({ dm: { id, from, userId: user ? user.id : '', nick: mine[0].nick, text, isImage: !!m.isImage, deleted: false, background: pair.background, t: now, request } })}\n\n`;
         liveByIid(from).forEach(c => c.write(data));
         targets.forEach(c => c.write(data));
-        json(res, 200, { id, t: now });
+        json(res, 200, { id, t: now, background: pair.background });
       } catch { json(res, 400); res.end(); }
     });
   }
