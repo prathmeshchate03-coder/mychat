@@ -1,14 +1,14 @@
-// JenChat - zero-dependency guest chat server with Registration, Email Verification & Image Deletion (Node 18+)
+// JenChat - zero-dependency guest chat server with Registration, Email Verification, Image Deletion & Logout (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const rooms = new Map(), hits = new Map(), conns = new Map();
-const bans = new Map();       // ip -> { reason, t, until }
-const closed = new Map();     // room name -> { reason, t }
+const bans = new Map();       
+const closed = new Map();     
 const registeredUsers = new Map(); // email -> { id, name, passHash, verified, code, t }
 const activeSessions = new Map();  // sessionId -> email
-const sent = new Map();       // msg id -> { ip, room, nick, text, t, userId?, isImage?, imageId? }
-const reports = [];           // newest first, max 200
+const sent = new Map();       
+const reports = [];           
 const adminFails = new Map();
 const BAD = [];
 const seo = require('./seo');
@@ -23,17 +23,6 @@ const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const okDk = s => /^[a-f0-9]{32}$/.test(s);
 const okIid = s => /^[a-f0-9]{16}$/.test(s);
 const iidOf = dk => (okDk(String(dk || '')) ? sha(dk).slice(0, 16) : '');
-const dmPairs = new Map();
-const dmBlocks = new Map();
-const dmNew = new Map();
-const dmLog = new Map();
-const DM_LOG_TTL = 12 * 3600000, DM_PAIR_TTL = 24 * 3600000;
-
-function liveByIid(iid) {
-  const out = [];
-  for (const r of rooms.values()) for (const c of r.clients) if (c.iid === iid) out.push(c);
-  return out;
-}
 
 function room(name) {
   if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', kicked: new Map() });
@@ -43,7 +32,7 @@ function room(name) {
 function sys(name, text) {
   const r = room(name);
   broadcast(name, { system: true, text, count: r.clients.size,
-    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, reg: !!c.reg })) });
+    users: [...r.clients].map(c => ({ id: c.cid, iid: c.iid, nick: c.nick, owner: !!c.owner, reg: !!c.reg })) });
 }
 
 function broadcast(name, msg) {
@@ -51,11 +40,6 @@ function broadcast(name, msg) {
   if (!msg.system) { r.history.push(msg); if (r.history.length > 50) r.history.shift(); }
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   r.clients.forEach(c => c.write(data));
-}
-
-function limited(ip) {
-  const now = Date.now(), a = (hits.get(ip) || []).filter(t => now - t < 10000);
-  a.push(now); hits.set(ip, a); return a.length > 8;
 }
 
 function readBody(req, max, cb) {
@@ -66,7 +50,7 @@ function readBody(req, max, cb) {
 
 function getSessionUser(req) {
   const cookie = req.headers['cookie'] || '';
-  const match = cookie.match(/session=([a-zA-Z0-9]+)/);
+  const match = cookie.match(/session=([a-zA-Z0-9-]+)/);
   if (!match) return null;
   const email = activeSessions.get(match[1]);
   return email ? registeredUsers.get(email) : null;
@@ -115,7 +99,6 @@ http.createServer((req, res) => {
           code: verifyCode,
           t: Date.now()
         });
-        // For testing/development convenience, code can be checked or sent. In production, connect SMTP/Mail relay.
         console.log(`Verification code for ${cleanEmail}: ${verifyCode}`);
         json(res, 200, { ok: true, message: 'Registration successful. Please verify your email.', debugCode: verifyCode });
       } catch { json(res, 400, { error: 'Bad request' }); }
@@ -164,10 +147,11 @@ http.createServer((req, res) => {
 
   if (url.pathname === '/auth/logout' && req.method === 'POST') {
     const cookie = req.headers['cookie'] || '';
-    const match = cookie.match(/session=([a-zA-Z0-9]+)/);
+    const match = cookie.match(/session=([a-zA-Z0-9-]+)/);
     if (match) activeSessions.delete(match[1]);
-    res.setHeader('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+    res.setHeader('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Strict');
     res.writeHead(204); res.end();
+    return;
   }
 
   // ----- IMAGE DELETION ENDPOINT -----
@@ -181,7 +165,6 @@ http.createServer((req, res) => {
         if (!msg || msg.userId !== user.id) {
           return json(res, 403, { error: 'Unauthorized or message not found' });
         }
-        // Remove image content from sent cache & broadcast deletion
         msg.text = '[Image deleted by user]';
         msg.isImage = false;
         msg.deleted = true;
@@ -207,9 +190,8 @@ http.createServer((req, res) => {
     
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = finalNick; res.reg = !!user;
     res.uid = user ? user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
-    res.iid = iidOf(url.searchParams.get('dk'));
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: room(name).history, you: { id: res.cid, iid: res.iid, reg: res.reg, uid: res.uid } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: room(name).history, you: { id: res.cid, reg: res.reg, uid: res.uid } })}\n\n`);
     room(name).clients.add(res);
     sys(name, `${finalNick} joined`);
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -221,21 +203,19 @@ http.createServer((req, res) => {
     return;
   }
 
-  // ----- SEND MESSAGE (Supports both Text & Base64 Images) -----
+  // ----- SEND MESSAGE (Images restricted to registered users only) -----
   if (url.pathname === '/send' && req.method === 'POST') {
-    return readBody(req, 2000000, body => { // Max 2MB payload
+    return readBody(req, 2000000, body => {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase();
         const user = getSessionUser(req);
         
-        // Agar Image hai aur User Registered/LoggedIn nahi hai toh block karein
         if (m.isImage && !user) {
           return json(res, 403, { error: 'Only registered & verified users can share images.' });
         }
 
         let text = m.isImage ? String(m.text || '') : clean(m.text, 500);
         const nick = user ? user.name : clean(m.nick, 20);
-
         if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
 
         const msg = { 
@@ -247,10 +227,8 @@ http.createServer((req, res) => {
           isImage: !!m.isImage, 
           t: Date.now() 
         };
-
         sent.set(msg.id, { ip, room: name, nick, text, userId: user ? user.id : '', isImage: !!m.isImage, t: msg.t });
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
-        
         broadcast(name, msg);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
