@@ -1,4 +1,4 @@
-// JenChat - zero-dependency guest chat server with Room Roles (Owner, Co-Admin, Mod) & Shared Background Permissions (Node 18+)
+// JenChat - zero-dependency guest chat server with Room Roles & Gallery Background Upload Support (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
@@ -50,7 +50,7 @@ function room(name, creatorUserId) {
       history: [],
       background: '',
       ownerId: creatorUserId || '',
-      staff: new Map() // userId -> 'co-admin' | 'mod'
+      staff: new Map()
     });
   }
   const r = rooms.get(name);
@@ -200,7 +200,6 @@ http.createServer((req, res) => {
     res.writeHead(204); res.end(); return;
   }
 
-  // --- Assign Staff Role (Co-Admin / Moderator) ---
   if (url.pathname === '/room/staff' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -223,9 +222,9 @@ http.createServer((req, res) => {
     });
   }
 
-  // --- Room Background Endpoint (Owner / Co-Admin / Mod only) ---
+  // --- Room BG Upload Support (Increased max size to 10MB) ---
   if (url.pathname === '/room/bg' && req.method === 'POST') {
-    return readBody(req, 200000, body => {
+    return readBody(req, 10000000, body => {
       try {
         const user = getSessionUser(req);
         const { room: roomName, background } = JSON.parse(body);
@@ -246,7 +245,7 @@ http.createServer((req, res) => {
   }
 
   if (url.pathname === '/dm/bg' && req.method === 'POST') {
-    return readBody(req, 200000, body => {
+    return readBody(req, 10000000, body => {
       try {
         const m = JSON.parse(body), from = iidOf(m.dk), to = String(m.to || '');
         const key = [from, to].sort().join(':');
