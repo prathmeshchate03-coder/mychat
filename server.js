@@ -6,8 +6,7 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const rooms = new Map(), hits = new Map(), conns = new Map();
 const bans = new Map();       // ip -> { reason, t, until }  (until = 0 means permanent)
 const closed = new Map();     // room name -> { reason, t }
-const acctBans = new Map();   // account id -> { name, reason, t }  (banned accounts cannot log in or send)
-const sent = new Map();       // msg id -> { ip, room, nick, text, t, acct?, img? }  last 3000 messages, server-side only
+const sent = new Map();       // msg id -> { ip, room, nick, text, t }  last 3000 messages, server-side only
 const reports = [];           // newest first, max 200
 const adminFails = new Map(); // ip -> { n, t }
 const BAD = [];   // add words to filter, e.g. ['word1', 'word2']
@@ -23,15 +22,12 @@ const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const okTok = s => /^[a-zA-Z0-9]{16,64}$/.test(s);
 const typingAt = new Map();   // ip -> last typing event time
 
-// ---------- direct messages (text only, 1 to 1) ----------
-// Identity: the browser keeps a secret "dk". The server only ever uses iid = first 16 hex of sha256(dk), which is public
-// (shown in the online list). Nobody can act as an iid without knowing its dk. DMs are never stored, except a short
-// in-memory copy so a reported message can be checked by moderators.
+// ---------- direct messages (text & images, 1 to 1) ----------
 const okDk = s => /^[a-f0-9]{32}$/.test(s);
 const okIid = s => /^[a-f0-9]{16}$/.test(s);
 const iidOf = dk => (okDk(String(dk || '')) ? sha(dk).slice(0, 16) : '');
-const dmPairs = new Map();    // "a:b" (sorted) -> { from, to, accepted, t }. A first message is only a request until the other side replies or accepts.
-const dmBlocks = new Map();   // iid -> Set of iids it blocked (memory only, the browser re-sends its list on every join)
+const dmPairs = new Map();    // "a:b" (sorted) -> { from, to, accepted, t }
+const dmBlocks = new Map();   // iid -> Set of iids it blocked
 const dmNew = new Map();      // iid -> times it started a new conversation
 const dmLog = new Map();      // msg id -> { ip, from, to, fromNick, toNick, text, t }, max 1000, 12h
 const DM_LOG_TTL = 12 * 3600000, DM_PAIR_TTL = 24 * 3600000;
@@ -42,15 +38,13 @@ function liveByIid(iid) {
 }
 
 function room(name) {
-  // ownerTok: sha256 of the creator's secret (private rooms only). kicked: ip -> expiry time.
   if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', kicked: new Map() });
   return rooms.get(name);
 }
-// Join/leave notice that also carries the current member list (no IPs, only public info).
 function sys(name, text) {
   const r = room(name);
   broadcast(name, { system: true, text, count: r.clients.size,
-    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, v: !!c.acct })) });
+    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner })) });
 }
 function isKicked(r, ip) {
   const t = r.kicked.get(ip);
@@ -73,58 +67,41 @@ function readBody(req, max, cb) {
   req.on('data', d => { body += d; if (body.length > max) { req.destroy(); } });
   req.on('end', () => cb(body));
 }
-// Binary request body (images). Answers 413 itself when the body is too big.
-function readBuf(req, res, max, cb) {
-  const chunks = []; let n = 0, over = false;
-  req.on('data', d => {
-    if (over) return;
-    n += d.length;
-    if (n > max) { over = true; res.setHeader('Connection', 'close'); json(res, 413, { error: 'too_big' }); return; }
-    chunks.push(d);
-  });
-  req.on('end', () => { if (!over) cb(Buffer.concat(chunks)); });
-  req.on('error', () => {});
-}
 
 // ---------- persistence (optional) ----------
-// Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN to keep bans, closed rooms and reports across restarts.
-// Without them everything stays in memory exactly as before. Chat messages are never stored.
-// Forgive common copy-paste mistakes: spaces, quotes, "Bearer " prefix, missing https://
 const envClean = s => String(s || '').trim().replace(/^["']+|["']+$/g, '').trim();
 let DB_URL = envClean(process.env.UPSTASH_REDIS_REST_URL), DB_TOKEN = envClean(process.env.UPSTASH_REDIS_REST_TOKEN).replace(/^Bearer\s+/i, '');
 if (DB_URL && !/^[a-z]+:\/\//i.test(DB_URL)) DB_URL = 'https://' + DB_URL;
 const REPORT_KEEP = 14 * 86400000, SAVE_DELAY = 10000;
 let dbReady = !DB_URL, saveTimer = null, dbError = '';
 const dirty = new Set();
-async function dbCmd(cmd, timeoutMs) {
-  if (/^rediss?:/i.test(DB_URL)) throw new Error('wrong URL type: use the REST URL that starts with https://, not the redis:// one');
-  if (!DB_TOKEN) throw new Error('UPSTASH_REDIS_REST_TOKEN is empty or missing');
+async function dbCmd(cmd) {
+  if (/^rediss?:/i.test(DB_URL)) throw new Error('wrong URL type');
+  if (!DB_TOKEN) throw new Error('token missing');
   let r;
   try {
     r = await fetch(DB_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + DB_TOKEN, 'Content-Type': 'application/json' },
-      body: JSON.stringify(cmd), signal: AbortSignal.timeout(timeoutMs || 5000) });
-  } catch (e) { throw new Error('cannot connect to the database URL (' + ((e.cause && (e.cause.code || e.cause.message)) || e.name + ': ' + e.message) + ')'); }
+      body: JSON.stringify(cmd), signal: AbortSignal.timeout(5000) });
+  } catch (e) { throw new Error('db connect error'); }
   const j = await r.json().catch(() => ({}));
   if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
   return j.result;
 }
-const dump = { bans: () => [...bans], closed: () => [...closed], acctbans: () => [...acctBans], reports: () => reports.filter(r => r.at > Date.now() - REPORT_KEEP) };
+const dump = { bans: () => [...bans], closed: () => [...closed], reports: () => reports.filter(r => r.at > Date.now() - REPORT_KEEP) };
 function touch(k) { if (!DB_URL) return; dirty.add(k); if (dbReady && !saveTimer) saveTimer = setTimeout(flush, SAVE_DELAY); }
 async function flush() {
   clearTimeout(saveTimer); saveTimer = null;
-  if (!dbReady) return;   // never write before the old data was read, or we would overwrite it with an empty list
+  if (!dbReady) return;
   for (const k of [...dirty]) {
-    dirty.delete(k);      // removed before the await, so a change made during the save marks it dirty again
+    dirty.delete(k);
     try { await dbCmd(['SET', 'jc:' + k, JSON.stringify(dump[k]())]); dbError = ''; }
-    catch (e) { dbError = 'save failed: ' + e.message; console.error('DB SAVE FAILED', k, e.message); dirty.add(k); if (!saveTimer) saveTimer = setTimeout(flush, 30000); }
+    catch (e) { dbError = 'save failed'; dirty.add(k); if (!saveTimer) saveTimer = setTimeout(flush, 30000); }
   }
 }
-// Merge what the database has into memory. Anything already in memory wins.
 function mergeLoaded(k, data) {
   const now = Date.now();
   if (k === 'bans') data.forEach(e => { if (Array.isArray(e) && okIp(String(e[0])) && e[1] && !bans.has(e[0]) && (!e[1].until || e[1].until > now)) bans.set(e[0], e[1]); });
   else if (k === 'closed') data.forEach(e => { if (Array.isArray(e) && okRoom(String(e[0])) && e[1] && !closed.has(e[0])) closed.set(e[0], e[1]); });
-  else if (k === 'acctbans') data.forEach(e => { if (Array.isArray(e) && /^[a-f0-9]{16}$/.test(String(e[0])) && e[1] && !acctBans.has(e[0])) acctBans.set(e[0], e[1]); });
   else {
     const have = new Set(reports.map(r => r.rid));
     data.forEach(r => { if (r && r.rid && r.at > now - REPORT_KEEP && !have.has(r.rid)) reports.push(r); });
@@ -138,27 +115,11 @@ async function dbLoad() {
       if (raw) { const d = JSON.parse(raw); if (Array.isArray(d)) mergeLoaded(k, d); }
     }
     dbReady = true; dbError = '';
-    console.log(`DB loaded: ${bans.size} bans, ${closed.size} closed rooms, ${acctBans.size} banned accounts, ${reports.length} reports`);
     if (dirty.size) flush();
-    auth.init();
-  } catch (e) { dbError = e.message; console.error('DB LOAD FAILED, retrying in 30s:', e.message); setTimeout(dbLoad, 30000); }
-}
-
-// ---------- accounts and images (need the database) ----------
-// Accounts also need MAIL_RELAY_URL + MAIL_RELAY_SECRET (the Google Apps Script mail relay, see mail-relay.gs).
-const dbOn = () => !!DB_URL && dbReady;
-const acctBanned = id => acctBans.has(id);
-const auth = require('./auth')({ db: dbCmd, dbReady: dbOn, isAcctBanned: acctBanned,
-  mailUrl: envClean(process.env.MAIL_RELAY_URL), mailSecret: envClean(process.env.MAIL_RELAY_SECRET), mailDaily: process.env.MAIL_DAILY_LIMIT });
-const images = require('./images')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
-  budgetMB: Number(process.env.IMAGE_BUDGET_MB) || 200, ttlDays: 7 });
-const acctIid = id => sha('acct:' + id).slice(0, 16);   // DM identity of an account, the same on every device
-function who(req, body) {   // who is making a DM request: an account (cookie) or a guest (secret code dk)
-  const user = auth.session(req);
-  return { user, iid: user ? acctIid(user.id) : iidOf(body && body.dk) };
+  } catch (e) { setTimeout(dbLoad, 30000); }
 }
 if (DB_URL) dbLoad();
-async function shutdown() {   // Render sends SIGTERM on every deploy: save pending changes first
+async function shutdown() {
   try { await Promise.race([flush(), new Promise(r => setTimeout(r, 4000))]); } finally { process.exit(0); }
 }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
@@ -170,7 +131,6 @@ function isBanned(ip) {
   if (b.until && b.until < Date.now()) { bans.delete(ip); touch('bans'); return false; }
   return true;
 }
-// Disconnect live SSE clients that match pred(res, roomName), with a last notice.
 function kick(pred, text) {
   const data = `data: ${JSON.stringify({ system: true, text })}\n\n`;
   for (const [name, r] of rooms) for (const c of [...r.clients]) {
@@ -189,28 +149,6 @@ function closeRoom(name, reason) {
   reports.forEach(r => { if (r.room === name && r.status === 'open') r.status = 'closed'; });
   touch('closed'); touch('reports');
 }
-function banAcct(id, name, reason) {
-  acctBans.set(id, { name: clean(name, 20), reason: clean(reason, 100), t: Date.now() });
-  kick(c => c.acct === id, 'Your account has been banned.');
-  reports.forEach(r => { if (r.acct === id && r.status === 'open') r.status = 'banned'; });
-  images.idsByUser(id).then(ids => Promise.all(ids.map(i => dropImage(i, false)))).catch(() => {});   // pictures this account uploaded recently go with it
-  touch('acctbans'); touch('reports');
-}
-// Remove a picture everywhere: the stored copy, the room history that new joiners would see, and the screens of
-// everybody who is online right now (they swap the picture for "Picture deleted").
-async function dropImage(id, keepEvidence) {
-  await images.remove(id, keepEvidence);
-  const hit = new Set();
-  for (const s of sent.values()) if (s.img === id) { delete s.img; s.imgGone = true; hit.add(s.room); }
-  for (const [name, r] of rooms) for (const m of r.history) if (m.img === id) { delete m.img; m.imgGone = true; hit.add(name); }
-  const ev = `data: ${JSON.stringify({ imgdel: id })}\n\n`;
-  for (const name of hit) { const r = rooms.get(name); if (r) r.clients.forEach(c => c.write(ev)); }
-  const dev = `data: ${JSON.stringify({ dmdel: { img: id } })}\n\n`, seen = new Set();
-  for (const d of dmLog.values()) if (d.img === id) {
-    delete d.img; d.imgGone = true;
-    for (const iid of [d.from, d.to]) for (const c of liveByIid(iid)) if (!seen.has(c)) { seen.add(c); c.write(dev); }
-  }
-}
 function adminAuth(req, res, ip) {
   if (!ADMIN_TOKEN) { res.writeHead(503); res.end('admin disabled'); return false; }
   const now = Date.now(), f = adminFails.get(ip);
@@ -223,12 +161,7 @@ function adminAuth(req, res, ip) {
 function json(res, code, obj) { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); }
 
 http.createServer((req, res) => {
-  handle(req, res).catch(e => { console.error('ERR', e); try { if (!res.headersSent) res.writeHead(500); res.end(); } catch {} });
-}).listen(PORT, () => console.log('JenChat running on port ' + PORT + (ADMIN_TOKEN ? '' : ' (admin disabled: set ADMIN_TOKEN)')));
-
-async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
-  // On Render the last X-Forwarded-For entry is the one added by Render's proxy = the real client.
   const ip = (req.headers['x-forwarded-for'] || '').split(',').pop().trim() || req.socket.remoteAddress;
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
@@ -238,32 +171,10 @@ async function handle(req, res) {
     if (url.pathname === '/admin') { headers['Cache-Control'] = 'no-store'; headers['X-Robots-Tag'] = 'noindex, nofollow'; }
     if (file.endsWith('.png')) headers['Cache-Control'] = 'public, max-age=86400';
     let content = fs.readFileSync(path.join(PUB, file));
-    if (file.endsWith('.html')) content = seo.injectHead(file, content.toString('utf8'), seo.siteBase(req));   // canonical + share tags
+    if (file.endsWith('.html')) content = seo.injectHead(file, content.toString('utf8'), seo.siteBase(req));
     res.writeHead(200, headers);
     return res.end(content);
   }
-  if (auth.handle(req, res, url, ip, seo.siteBase(req), readBody)) return;   // /auth/*, /verify, /reset
-  if (url.pathname === '/img' && req.method === 'POST') {
-    if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
-    return images.upload(req, res, ip, json, readBuf);
-  }
-  // The sender deletes their own picture (in a room or in a private chat). It disappears for everybody at once.
-  if (url.pathname === '/img/delete' && req.method === 'POST') {
-    if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
-    return readBody(req, 300, async body => {
-      try {
-        const user = auth.session(req), id = String(JSON.parse(body).id || '');
-        if (!user) return json(res, 401, { error: 'login' });
-        if (!/^[a-f0-9]{32}$/.test(id)) return json(res, 400, { error: 'bad_id' });
-        if (images.deleteLimited(user.id)) return json(res, 429, { error: 'rate' });
-        if ((await images.ownerOf(id)) !== user.id) return json(res, 404, { error: 'not_found' });   // not yours, or already gone
-        await dropImage(id, true);
-        res.writeHead(204); res.end();
-      } catch (e) { json(res, e instanceof SyntaxError ? 400 : 503, { error: 'unavailable' }); }
-    });
-  }
-  const imgMatch = req.method === 'GET' && url.pathname.match(/^\/img\/([a-f0-9]{32})$/);
-  if (imgMatch) return images.serve(req, res, imgMatch[1]);
   if (req.method === 'GET' || req.method === 'HEAD') {
     const page = seo.route(url.pathname, seo.siteBase(req));
     if (page) {
@@ -273,10 +184,10 @@ async function handle(req, res) {
     }
   }
 
-  // ----- admin API (needs x-admin-token header) -----
+  // ----- admin API -----
   if (url.pathname === '/admin/api/state' && req.method === 'GET') {
     if (!adminAuth(req, res, ip)) return;
-    for (const k of [...bans.keys()]) isBanned(k);   // drop expired bans
+    for (const k of [...bans.keys()]) isBanned(k);
     return json(res, 200, {
       reports: reports.map(({ reporters, ...r }) => r),
       bans: [...bans].map(([bip, b]) => ({ ip: bip, ...b })),
@@ -284,24 +195,11 @@ async function handle(req, res) {
       live: [...rooms].filter(([, r]) => r.clients.size).map(([name, r]) => ({ name, count: r.clients.size }))
         .sort((a, b) => b.count - a.count),
       storage: !DB_URL ? 'memory' : dbReady ? 'database' : 'connecting',
-      dbError: dbError.slice(0, 200),   // reason text only, never the URL or token
-      acctBans: [...acctBans].map(([id, b]) => ({ id, ...b })),
-      accounts: auth.status(),
-      images: images.status(),
+      dbError: dbError.slice(0, 200),
     });
   }
-  // A reported picture, for the admin page (the token travels in a header, so the page fetches it as a blob)
-  if (url.pathname === '/admin/api/img' && req.method === 'GET') {
-    if (!adminAuth(req, res, ip)) return;
-    const id = String(url.searchParams.get('id') || '');
-    if (!/^[a-f0-9]{32}$/.test(id)) return json(res, 400, { error: 'bad id' });
-    const img = await images.read(id).catch(() => null);
-    if (!img) return json(res, 404, { error: 'gone' });
-    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
-    return res.end(img.buf);
-  }
   if (url.pathname === '/admin/api/action' && req.method === 'POST') {
-    return readBody(req, 2000, async body => {
+    return readBody(req, 2000, body => {
       if (!adminAuth(req, res, ip)) return;
       try {
         const m = JSON.parse(body), rep = m.rid ? reports.find(r => r.rid === m.rid) : null;
@@ -313,7 +211,7 @@ async function handle(req, res) {
         } else if (m.a === 'unban') {
           if (bans.delete(String(m.ip || ''))) touch('bans');
         } else if (m.a === 'close') {
-          if (rep && rep.dm) return json(res, 400, { error: 'a private message has no room' });
+          if (rep && rep.dm) return json(res, 400, { error: 'dm has no room' });
           const name = rep ? rep.room : String(m.room || '').toLowerCase();
           if (!okRoom(name)) return json(res, 400, { error: 'bad room' });
           closeRoom(name, m.reason || 'moderator');
@@ -321,17 +219,6 @@ async function handle(req, res) {
           if (closed.delete(String(m.room || ''))) touch('closed');
         } else if (m.a === 'dismiss') {
           if (rep) { rep.status = 'dismissed'; touch('reports'); }
-        } else if (m.a === 'banacct') {
-          const id = rep ? rep.acct : String(m.id || '');
-          if (!/^[a-f0-9]{16}$/.test(id || '')) return json(res, 400, { error: 'this message was not sent from an account' });
-          banAcct(id, rep ? rep.nick : m.name, m.reason || (rep ? 'reported: ' + (rep.text || 'image') : 'manual'));
-        } else if (m.a === 'unbanacct') {
-          if (acctBans.delete(String(m.id || ''))) touch('acctbans');
-        } else if (m.a === 'delimg') {
-          const id = rep ? rep.img : String(m.id || '');
-          if (!/^[a-f0-9]{32}$/.test(id || '')) return json(res, 400, { error: 'no image' });
-          await dropImage(id, false);
-          if (rep) { rep.status = 'image removed'; touch('reports'); }
         } else return json(res, 400, { error: 'unknown action' });
         json(res, 200, { ok: true });
       } catch { json(res, 400, { error: 'bad request' }); }
@@ -346,24 +233,20 @@ async function handle(req, res) {
     return res.end(JSON.stringify(list));
   }
   if (url.pathname === '/events') {
-    const name = String(url.searchParams.get('room') || '').toLowerCase(), user = auth.session(req);
-    const nick = user ? user.name : clean(url.searchParams.get('nick'), 20);   // an account always chats under its own name
+    const name = String(url.searchParams.get('room') || '').toLowerCase(), nick = clean(url.searchParams.get('nick'), 20);
     if (!okRoom(name) || !nick || (conns.get(ip) || 0) >= 5) { res.writeHead(400); return res.end(); }
     if (isBanned(ip)) { res.writeHead(403); return res.end('banned'); }
     if (closed.has(name)) { res.writeHead(403); return res.end('closed'); }
-    if (!user && await auth.nameReserved(nick)) { res.writeHead(403); return res.end('reserved'); }   // that name belongs to an account
     const r = room(name), otok = String(url.searchParams.get('otok') || '');
-    // The first person to open a private room with a valid secret becomes its owner.
     if (name.startsWith('p-') && okTok(otok) && !r.ownerTok) r.ownerTok = sha(otok);
     const owner = !!r.ownerTok && okTok(otok) && sha(otok) === r.ownerTok;
     if (!owner && isKicked(r, ip)) { res.writeHead(403); return res.end('kicked'); }
     conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner;
-    res.acct = user ? user.id : '';
-    res.uid = user ? 'a' + user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
-    res.iid = user ? acctIid(user.id) : iidOf(url.searchParams.get('dk'));   // '' for old pages without dk: they simply have no DM
+    res.uid = clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
+    res.iid = iidOf(url.searchParams.get('dk'));
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid, uid: res.uid } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid } })}\n\n`);
     r.clients.add(res);
     sys(name, `${nick} joined`);
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -375,50 +258,54 @@ async function handle(req, res) {
     });
     return;
   }
+
+  // ----- SEND MESSAGE (Supports Images & Large Body Size) -----
   if (url.pathname === '/send' && req.method === 'POST') {
-    return readBody(req, 5000, async body => {
+    return readBody(req, 1500000, body => {
       try {
-        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), user = auth.session(req);
-        let text = clean(m.text, 500), nick = clean(m.nick, 20);
-        const imgId = m.img ? String(m.img) : '';
-        if (user) nick = user.name;
-        if (!okRoom(name) || (!text && !imgId) || !nick) { res.writeHead(400); return res.end(); }
-        if (imgId && !user) return json(res, 403, { error: 'login' });                       // only accounts may send pictures
-        if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });   // and only ones they uploaded themselves
-        if (!user && await auth.nameReserved(nick)) return json(res, 403, { error: 'reserved' });
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase();
+        let text = m.isImage ? String(m.text || '').slice(0, 1500000) : clean(m.text, 500);
+        const nick = clean(m.nick, 20);
+        if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
         if (isBanned(ip) || closed.has(name)) { res.writeHead(403); return res.end(); }
         const r = rooms.get(name);
         if (r && isKicked(r, ip) && !(r.ownerTok && okTok(String(m.otok || '')) && sha(String(m.otok)) === r.ownerTok)) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
-        BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
-        const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
-        if (user) msg.v = true;      // verified account badge
-        if (imgId) msg.img = imgId;
-        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}) });   // ip stays server-side, never broadcast
+        if (!m.isImage) {
+          BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
+        }
+        const msg = { 
+          id: crypto.randomUUID().slice(0, 8), 
+          nick, 
+          uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), 
+          text, 
+          isImage: !!m.isImage, 
+          t: Date.now() 
+        };
+        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t });
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
     });
   }
+
   if (url.pathname === '/typing' && req.method === 'POST') {
-    return readBody(req, 500, async body => {
+    return readBody(req, 500, body => {
       res.writeHead(204); res.end();
       const now = Date.now();
       if (isBanned(ip) || now - (typingAt.get(ip) || 0) < 1500) return;
       try {
-        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), user = auth.session(req);
-        const nick = user ? user.name : clean(m.nick, 20);
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), nick = clean(m.nick, 20);
         const r = rooms.get(name);
-        if (!r || !nick || closed.has(name) || ![...r.clients].some(c => c.ip === ip)) return;   // must be in the room
-        if (!user && await auth.nameReserved(nick)) return;
+        if (!r || !nick || closed.has(name) || ![...r.clients].some(c => c.ip === ip)) return;
         typingAt.set(ip, now);
-        const data = `data: ${JSON.stringify({ typing: true, nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, '') })}\n\n`;
+        const data = `data: ${JSON.stringify({ typing: true, nick, uid: clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, '') })}\n\n`;
         r.clients.forEach(c => c.write(data));
       } catch {}
     });
   }
-  // Private room owner removes someone: they are disconnected and blocked from this room for 1 hour.
+
   if (url.pathname === '/kick' && req.method === 'POST') {
     return readBody(req, 500, body => {
       try {
@@ -433,23 +320,21 @@ async function handle(req, res) {
       } catch { res.writeHead(400); res.end(); }
     });
   }
-  // Send a direct message. Statuses: 204 ok, 404 recipient offline, 409 waiting for them to accept, 429 too fast.
+
+  // ----- DIRECT MESSAGES (Supports Images & Large Body Size) -----
   if (url.pathname === '/dm' && req.method === 'POST') {
-    return readBody(req, 2000, body => {
+    return readBody(req, 1500000, body => {
       try {
-        const m = JSON.parse(body), { user, iid: from } = who(req, m), to = String(m.to || '');
-        let text = clean(m.text, 500);
-        const imgId = m.img ? String(m.img) : '';
-        if (!from || !okIid(to) || to === from || (!text && !imgId)) return json(res, 400, { error: 'bad request' });
-        if (imgId && !user) return json(res, 403, { error: 'login' });
-        if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });
+        const m = JSON.parse(body), from = iidOf(m.dk), to = String(m.to || '');
+        let text = m.isImage ? String(m.text || '').slice(0, 1500000) : clean(m.text, 500);
+        if (!from || !okIid(to) || to === from || !text) return json(res, 400, { error: 'bad request' });
         if (isBanned(ip)) return json(res, 403, { error: 'banned' });
         const mine = liveByIid(from);
-        if (!mine.length) return json(res, 403, { error: 'not online' });   // you must be connected to a room
+        if (!mine.length) return json(res, 403, { error: 'not online' });
         if (limited(ip)) return json(res, 429, { error: 'slow down' });
         const targets = liveByIid(to);
         if (!targets.length) return json(res, 404, { error: 'offline' });
-        if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) { res.writeHead(204); return res.end(); }   // blocked: dropped without telling the sender
+        if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) { res.writeHead(204); res.end(); }
         const key = [from, to].sort().join(':'), now = Date.now();
         let pair = dmPairs.get(key), request = false;
         if (!pair) {
@@ -457,41 +342,43 @@ async function handle(req, res) {
           if (recent.length >= 6) return json(res, 429, { error: 'too many new conversations' });
           let pending = 0;
           for (const p of dmPairs.values()) if (p.to === to && !p.accepted) pending++;
-          if (pending >= 15) { res.writeHead(204); return res.end(); }   // their request inbox is full
+          if (pending >= 15) { res.writeHead(204); res.end(); }
           recent.push(now); dmNew.set(from, recent);
           pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true;
           if (dmPairs.size > 5000) dmPairs.delete(dmPairs.keys().next().value);
         } else if (!pair.accepted) {
           if (pair.from === from) return json(res, 409, { error: 'pending' });
-          pair.accepted = true;   // replying counts as accepting
+          pair.accepted = true;
         }
         pair.t = now;
-        BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
+        if (!m.isImage) {
+          BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
+        }
         const id = crypto.randomUUID().slice(0, 8);
-        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}) });
+        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, isImage: !!m.isImage, t: now });
         if (dmLog.size > 1000) dmLog.delete(dmLog.keys().next().value);
-        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request, ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}) } })}\n\n`;
+        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, isImage: !!m.isImage, t: now, request } })}\n\n`;
         targets.forEach(c => c.write(data));
         json(res, 200, { id, t: now });
       } catch { json(res, 400, { error: 'bad request' }); }
     });
   }
-  // The receiver accepts a request, so the sender may keep writing.
+
   if (url.pathname === '/dm/accept' && req.method === 'POST') {
     return readBody(req, 500, body => {
       try {
-        const m = JSON.parse(body), me = who(req, m).iid, other = String(m.from || '');
+        const m = JSON.parse(body), me = iidOf(m.dk), other = String(m.from || '');
         const pair = okIid(other) && me ? dmPairs.get([me, other].sort().join(':')) : null;
         if (pair && pair.to === me) pair.accepted = true;
         res.writeHead(204); res.end();
-      } catch { res.writeHead(400); res.end(); }
+      } catch { json(res, 400, { error: 'bad request' }); }
     });
   }
-  // Keep the server's block list in step with the browser's: add and remove lists of iids.
+
   if (url.pathname === '/dm/block' && req.method === 'POST') {
     return readBody(req, 4000, body => {
       try {
-        const m = JSON.parse(body), me = who(req, m).iid;
+        const m = JSON.parse(body), me = iidOf(m.dk);
         if (!me) { res.writeHead(400); return res.end(); }
         const set = dmBlocks.get(me) || new Set();
         (Array.isArray(m.add) ? m.add : []).slice(0, 200).forEach(i => { if (okIid(String(i)) && set.size < 300) set.add(String(i)); });
@@ -501,6 +388,7 @@ async function handle(req, res) {
       } catch { res.writeHead(400); res.end(); }
     });
   }
+
   if (url.pathname === '/report' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       res.writeHead(204); res.end();
@@ -508,23 +396,21 @@ async function handle(req, res) {
       try {
         const b = JSON.parse(body), id = String(b.id || '').slice(0, 8);
         let src = sent.get(id);
-        if (!src) {   // a private message can only be reported by the person it was sent to
+        if (!src) {
           const d = dmLog.get(id);
-          if (d && who(req, b).iid === d.to) src = { ip: d.ip, room: 'dm', nick: d.fromNick, text: d.text, t: d.t, dm: true, ...(d.acct ? { acct: d.acct } : {}), ...(d.img ? { img: d.img } : {}) };
+          if (d && iidOf(b.dk) === d.to) src = { ip: d.ip, room: 'dm', nick: d.fromNick, text: d.text, t: d.t, dm: true };
         }
-        if (!src) return;   // we only trust our own copy of the message, not what the client sends
+        if (!src) return;
         const open = reports.find(r => r.msgId === id && r.status === 'open');
         if (open) { if (!open.reporters.includes(ip)) { open.reporters.push(ip); open.count++; touch('reports'); } return; }
         reports.unshift({ rid: crypto.randomUUID().slice(0, 8), msgId: id, ...src, count: 1, reporters: [ip], status: 'open', at: Date.now() });
         if (reports.length > 200) reports.pop();
         touch('reports');
-        if (src.img) images.keep(src.img).catch(e => console.error('IMG keep', e.message));   // evidence copy, kept 14 days even if the sender deletes the picture
-        console.log('REPORT', src.room, src.nick, src.img ? '[image]' : src.text.slice(0, 100));
       } catch {}
     });
   }
   res.writeHead(404); res.end('Not found');
-}
+}).listen(PORT, () => console.log('JenChat running on port ' + PORT + (ADMIN_TOKEN ? '' : ' (admin disabled)')));
 
 setInterval(() => {
   const n = Date.now();
@@ -534,7 +420,7 @@ setInterval(() => {
   for (const [k, p] of dmPairs) if (n - p.t > DM_PAIR_TTL) dmPairs.delete(k);
   for (const [k, d] of dmLog) if (n - d.t > DM_LOG_TTL) dmLog.delete(k);
   for (const [k, a] of dmNew) if (!a.some(t => n - t < 3600000)) dmNew.delete(k);
-  let pruned = false;   // reports are newest first, so the oldest are at the end
+  let pruned = false;
   while (reports.length && reports[reports.length - 1].at < n - REPORT_KEEP) { reports.pop(); pruned = true; }
   if (pruned) touch('reports');
 }, 60000);
