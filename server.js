@@ -1,23 +1,17 @@
-// JenChat - zero-dependency guest chat server with Registration, DMs, User List, Image Deletion & Logout (Node 18+)
+// JenChat - zero-dependency guest chat server with Registration, DMs, Image Sharing & Deletion (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const rooms = new Map(), hits = new Map(), conns = new Map();
-const bans = new Map();       
-const closed = new Map();     
-const registeredUsers = new Map(); // email -> { id, name, passHash, verified, code, t }
-const activeSessions = new Map();  // sessionId -> email
+const registeredUsers = new Map(); 
+const activeSessions = new Map();  
 const sent = new Map();       
 const reports = [];           
-const adminFails = new Map();
-const BAD = [];
 const seo = require('./seo');
 const PAGES = { '/': 'index.html', '/chat': 'chat.html', '/legal': 'legal.html', '/admin': 'admin.html', '/style.css': 'style.css', '/logo.svg': 'logo.svg', '/og.png': 'og.png' };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const okRoom = s => /^[a-z0-9-]{1,30}$/.test(s);
-const okIp = s => /^[0-9a-fA-F:.]{3,45}$/.test(s);
 const clean = (s, n) => String(s || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
-const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 
 const okDk = s => /^[a-f0-9]{32}$/.test(s);
@@ -25,9 +19,7 @@ const okIid = s => /^[a-f0-9]{16}$/.test(s);
 const iidOf = dk => (okDk(String(dk || '')) ? sha(dk).slice(0, 16) : '');
 const dmPairs = new Map();
 const dmBlocks = new Map();
-const dmNew = new Map();
 const dmLog = new Map();
-const DM_LOG_TTL = 12 * 3600000, DM_PAIR_TTL = 24 * 3600000;
 
 function liveByIid(iid) {
   const out = [];
@@ -46,23 +38,11 @@ function sys(name, text) {
     users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, reg: !!c.reg })) });
 }
 
-function isKicked(r, ip) {
-  const t = r.kicked.get(ip);
-  if (!t) return false;
-  if (t < Date.now()) { r.kicked.delete(ip); return false; }
-  return true;
-}
-
 function broadcast(name, msg) {
   const r = room(name);
   if (!msg.system) { r.history.push(msg); if (r.history.length > 50) r.history.shift(); }
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   r.clients.forEach(c => c.write(data));
-}
-
-function limited(ip) {
-  const now = Date.now(), a = (hits.get(ip) || []).filter(t => now - t < 10000);
-  a.push(now); hits.set(ip, a); return a.length > 8;
 }
 
 function readBody(req, max, cb) {
@@ -97,7 +77,6 @@ http.createServer((req, res) => {
     return res.end(content);
   }
 
-  // ----- AUTHENTICATION ENDPOINTS -----
   if (url.pathname === '/auth/register' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       try {
@@ -108,14 +87,12 @@ http.createServer((req, res) => {
         if (!cleanEmail || !cleanPass || !cleanName || cleanPass.length < 6) {
           return json(res, 400, { error: 'Invalid details or password too short (min 6 chars)' });
         }
-        if (registeredUsers.has(cleanEmail)) {
-          return json(res, 400, { error: 'Email already registered' });
-        }
+        if (registeredUsers.has(cleanEmail)) return json(res, 400, { error: 'Email already registered' });
         const verifyCode = Math.floor(100000 + Math.random() * 900000).toString();
         const userId = crypto.randomUUID().slice(0, 12);
         registeredUsers.set(cleanEmail, { id: userId, name: cleanName, email: cleanEmail, passHash: sha(cleanPass), verified: false, code: verifyCode, t: Date.now() });
         console.log(`Verification code for ${cleanEmail}: ${verifyCode}`);
-        json(res, 200, { ok: true, message: 'Registration successful. Please verify your email.', debugCode: verifyCode });
+        json(res, 200, { ok: true, message: 'Registration successful', debugCode: verifyCode });
       } catch { json(res, 400, { error: 'Bad request' }); }
     });
   }
@@ -125,11 +102,8 @@ http.createServer((req, res) => {
       try {
         const { email, code } = JSON.parse(body);
         const user = registeredUsers.get(clean(email, 50).toLowerCase());
-        if (!user || user.code !== String(code).trim()) {
-          return json(res, 400, { error: 'Invalid verification code' });
-        }
-        user.verified = true;
-        user.code = '';
+        if (!user || user.code !== String(code).trim()) return json(res, 400, { error: 'Invalid verification code' });
+        user.verified = true; user.code = '';
         json(res, 200, { ok: true, message: 'Email verified successfully!' });
       } catch { json(res, 400, { error: 'Bad request' }); }
     });
@@ -140,12 +114,8 @@ http.createServer((req, res) => {
       try {
         const { email, password } = JSON.parse(body);
         const user = registeredUsers.get(clean(email, 50).toLowerCase());
-        if (!user || user.passHash !== sha(String(password || ''))) {
-          return json(res, 400, { error: 'Invalid email or password' });
-        }
-        if (!user.verified) {
-          return json(res, 403, { error: 'Email not verified. Please verify first.' });
-        }
+        if (!user || user.passHash !== sha(String(password || ''))) return json(res, 400, { error: 'Invalid email or password' });
+        if (!user.verified) return json(res, 403, { error: 'Email not verified.' });
         const sessionId = crypto.randomUUID();
         activeSessions.set(sessionId, user.email);
         res.setHeader('Set-Cookie', `session=${sessionId}; Path=/; HttpOnly; SameSite=Strict`);
@@ -165,11 +135,10 @@ http.createServer((req, res) => {
     const match = cookie.match(/session=([a-zA-Z0-9-]+)/);
     if (match) activeSessions.delete(match[1]);
     res.setHeader('Set-Cookie', 'session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Strict');
-    res.writeHead(204); res.end();
-    return;
+    res.writeHead(204); res.end(); return;
   }
 
-  // ----- IMAGE DELETION ENDPOINT -----
+  // Image Deletion (Public & DMs)
   if (url.pathname === '/img/delete' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -177,21 +146,27 @@ http.createServer((req, res) => {
         if (!user) return json(res, 401, { error: 'Login required' });
         const { msgId } = JSON.parse(body);
         const msg = sent.get(msgId);
-        if (!msg || msg.userId !== user.id) {
-          return json(res, 403, { error: 'Unauthorized or message not found' });
-        }
-        msg.text = '[Image deleted by user]';
-        msg.isImage = false;
-        msg.deleted = true;
+        if (!msg || msg.userId !== user.id) return json(res, 403, { error: 'Unauthorized' });
+        
+        msg.text = '[Image deleted by user]'; msg.isImage = false; msg.deleted = true;
 
         const r = rooms.get(msg.room);
         if (r) {
-          r.history.forEach(h => {
-            if (h.id === msgId) { h.text = '[Image deleted by user]'; h.isImage = false; h.deleted = true; }
-          });
+          r.history.forEach(h => { if (h.id === msgId) { h.text = '[Image deleted by user]'; h.isImage = false; h.deleted = true; } });
           const delEvent = `data: ${JSON.stringify({ imgdel: msgId })}\n\n`;
           r.clients.forEach(c => c.write(delEvent));
         }
+
+        // Also check if it was a DM message
+        const dmMsg = dmLog.get(msgId);
+        if (dmMsg) {
+          dmMsg.text = '[Image deleted by user]'; dmMsg.isImage = false; dmMsg.deleted = true;
+          const targets = liveByIid(dmMsg.to === iidOf(user.id) ? dmMsg.from : dmMsg.to);
+          const delEvent = `data: ${JSON.stringify({ dmdel: msgId })}\n\n`;
+          liveByIid(dmMsg.from).forEach(c => c.write(delEvent));
+          targets.forEach(c => c.write(delEvent));
+        }
+
         res.writeHead(204); res.end();
       } catch { json(res, 400, { error: 'Bad request' }); }
     });
@@ -199,7 +174,7 @@ http.createServer((req, res) => {
 
   if (url.pathname === '/rooms') {
     const q = clean(url.searchParams.get('q'), 30).toLowerCase();
-    const list = [...rooms].filter(([n, r]) => !n.startsWith('p-') && r.clients.size && n.includes(q) && !closed.has(n))
+    const list = [...rooms].filter(([n, r]) => !n.startsWith('p-') && r.clients.size && n.includes(q))
       .map(([name, r]) => ({ name, count: r.clients.size })).sort((a, b) => b.count - a.count).slice(0, 30);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(list));
@@ -230,62 +205,55 @@ http.createServer((req, res) => {
     return;
   }
 
-  // ----- SEND MESSAGE (Images restricted to registered users only) -----
   if (url.pathname === '/send' && req.method === 'POST') {
     return readBody(req, 2000000, body => {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase();
         const user = getSessionUser(req);
-        
-        if (m.isImage && !user) {
-          return json(res, 403, { error: 'Only registered & verified users can share images.' });
-        }
+        if (m.isImage && !user) return json(res, 403, { error: 'Only registered users can share images.' });
 
         let text = m.isImage ? String(m.text || '') : clean(m.text, 500);
         const nick = user ? user.name : clean(m.nick, 20);
         if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
 
-        const msg = { 
-          id: crypto.randomUUID().slice(0, 8), 
-          nick, 
-          userId: user ? user.id : '',
-          uid: user ? user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), 
-          text, 
-          isImage: !!m.isImage, 
-          t: Date.now() 
-        };
+        const msg = { id: crypto.randomUUID().slice(0, 8), nick, userId: user ? user.id : '', uid: user ? user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, isImage: !!m.isImage, t: Date.now() };
         sent.set(msg.id, { ip, room: name, nick, text, userId: user ? user.id : '', isImage: !!m.isImage, t: msg.t });
-        if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
     });
   }
 
-  // ----- DIRECT MESSAGES (1 to 1) -----
+  // Direct Messages (DMs) with Image Sharing Restriction & Deletion
   if (url.pathname === '/dm' && req.method === 'POST') {
     return readBody(req, 2000000, body => {
       try {
         const m = JSON.parse(body), from = iidOf(m.dk), to = String(m.to || '');
+        const user = getSessionUser(req);
+        if (m.isImage && !user) return json(res, 403, { error: 'Only registered users can share images in DMs.' });
+
         let text = m.isImage ? String(m.text || '') : clean(m.text, 500);
         if (!from || !okIid(to) || to === from || !text) return json(res, 400, { error: 'bad request' });
         const mine = liveByIid(from);
         if (!mine.length) return json(res, 403, { error: 'not online' });
         const targets = liveByIid(to);
         if (!targets.length) return json(res, 404, { error: 'offline' });
-        if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) { res.writeHead(204); res.end(); }
+
         const key = [from, to].sort().join(':'), now = Date.now();
         let pair = dmPairs.get(key), request = false;
-        if (!pair) {
-          pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true;
-        } else if (!pair.accepted) {
+        if (!pair) { pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true; }
+        else if (!pair.accepted) {
           if (pair.from === from) return json(res, 409, { error: 'pending' });
           pair.accepted = true;
         }
         pair.t = now;
         const id = crypto.randomUUID().slice(0, 8);
-        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, isImage: !!m.isImage, t: now });
-        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, isImage: !!m.isImage, t: now, request } })}\n\n`;
+        dmLog.set(id, { id, ip, from, to, userId: user ? user.id : '', text, isImage: !!m.isImage, t: now });
+        
+        sent.set(id, { userId: user ? user.id : '', room: '', text, isImage: !!m.isImage, t: now });
+
+        const data = `data: ${JSON.stringify({ dm: { id, from, userId: user ? user.id : '', nick: mine[0].nick, text, isImage: !!m.isImage, t: now, request } })}\n\n`;
+        liveByIid(from).forEach(c => c.write(data));
         targets.forEach(c => c.write(data));
         json(res, 200, { id, t: now });
       } catch { json(res, 400, { error: 'bad request' }); }
@@ -303,21 +271,5 @@ http.createServer((req, res) => {
     });
   }
 
-  if (url.pathname === '/dm/block' && req.method === 'POST') {
-    return readBody(req, 4000, body => {
-      try {
-        const m = JSON.parse(body), me = iidOf(m.dk);
-        if (!me) { res.writeHead(400); return res.end(); }
-        const set = dmBlocks.get(me) || new Set();
-        (Array.isArray(m.add) ? m.add : []).forEach(i => { if (okIid(String(i))) set.add(String(i)); });
-        (Array.isArray(m.remove) ? m.remove : []).forEach(i => set.delete(String(i)));
-        if (set.size) dmBlocks.set(me, set); else dmBlocks.delete(me);
-        res.writeHead(204); res.end();
-      } catch { json(res, 400, { error: 'bad request' }); }
-    });
-  }
-
-  if (!res.headersSent) {
-    res.writeHead(404); res.end('Not found');
-  }
+  if (!res.headersSent) { res.writeHead(404); res.end('Not found'); }
 }).listen(PORT, () => console.log('JenChat running on port ' + PORT));
