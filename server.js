@@ -3,12 +3,12 @@ const http = require('http'), fs = require('fs'), path = require('path'), crypto
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
 const rooms = new Map(), hits = new Map(), conns = new Map();
-const registeredUsers = new Map(); // email -> { id, name, passHash, verified, code, t }
-const activeSessions = new Map();  // sessionId -> email
+const registeredUsers = new Map();
+const activeSessions = new Map();
 const sent = new Map();       
-const reports = [];           // Reported messages log
-const bans = new Map();       // IP bans
-const closed = new Map();     // Closed rooms
+const reports = [];           
+const bans = new Map();       
+const closed = new Map();     
 const seo = require('./seo');
 const PAGES = { '/': 'index.html', '/chat': 'chat.html', '/legal': 'legal.html', '/admin': 'admin.html', '/style.css': 'style.css', '/logo.svg': 'logo.svg', '/og.png': 'og.png' };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -20,7 +20,7 @@ const okDk = s => /^[a-f0-9]{32}$/.test(s);
 const okIid = s => /^[a-f0-9]{16}$/.test(s);
 const iidOf = dk => (okDk(String(dk || '')) ? sha(dk).slice(0, 16) : '');
 const dmPairs = new Map();
-const dmBlocks = new Map(); // iid -> Set of blocked iids
+const dmBlocks = new Map();
 const dmLog = new Map();
 
 function liveByIid(iid) {
@@ -83,7 +83,6 @@ http.createServer((req, res) => {
     return res.end(content);
   }
 
-  // --- Auth Endpoints ---
   if (url.pathname === '/auth/register' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       try {
@@ -145,7 +144,6 @@ http.createServer((req, res) => {
     res.writeHead(204); res.end(); return;
   }
 
-  // --- REPORT ENDPOINT ---
   if (url.pathname === '/report' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -156,14 +154,14 @@ http.createServer((req, res) => {
         if (msg) {
           reports.push({
             id: msg.id || id,
-            room: roomName || 'DM/Global',
+            room: roomName || 'Global',
             nick: msg.nick || 'Unknown',
             text: msg.isImage ? '[Image Shared]' : msg.text,
             t: Date.now(),
             ip: msg.ip || ip
           });
           if (reports.length > 200) reports.shift();
-          json(res, 200, { ok: true, message: 'Reported successfully' });
+          json(res, 200, { ok: true, message: 'Report submitted successfully' });
         } else {
           json(res, 404, { error: 'Message not found to report' });
         }
@@ -171,7 +169,6 @@ http.createServer((req, res) => {
     });
   }
 
-  // --- ADMIN API ENDPOINTS ---
   if (url.pathname === '/admin/data' && req.method === 'GET') {
     const auth = req.headers['authorization'] || '';
     const token = auth.replace('Bearer ', '').trim();
@@ -211,13 +208,12 @@ http.createServer((req, res) => {
       if (ADMIN_TOKEN && auth.replace('Bearer ', '').trim() !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
       try {
         const { ip: targetIp } = JSON.parse(body);
-        if (targetIp) bans.set(targetIp, Date.now() + 86400000); // 24 Hours
+        if (targetIp) bans.set(targetIp, Date.now() + 86400000);
         res.writeHead(204); res.end();
       } catch { json(res, 400, { error: 'Bad request' }); }
     });
   }
 
-  // --- BLOCK / UNBLOCK ENDPOINT FOR DMs ---
   if (url.pathname === '/dm/block' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -231,7 +227,6 @@ http.createServer((req, res) => {
     });
   }
 
-  // --- Image Deletion ---
   if (url.pathname === '/img/delete' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -315,7 +310,6 @@ http.createServer((req, res) => {
     });
   }
 
-  // --- DMs with Block Check ---
   if (url.pathname === '/dm' && req.method === 'POST') {
     return readBody(req, 2000000, body => {
       try {
@@ -326,7 +320,6 @@ http.createServer((req, res) => {
         let text = m.isImage ? String(m.text || '') : clean(m.text, 500);
         if (!from || !okIid(to) || to === from || !text) return json(res, 400, { error: 'bad request' });
 
-        // Check block
         if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) {
           return json(res, 403, { error: 'User blocked you' });
         }
@@ -352,7 +345,7 @@ http.createServer((req, res) => {
         liveByIid(from).forEach(c => c.write(data));
         targets.forEach(c => c.write(data));
         json(res, 200, { id, t: now });
-      } catch { json(res, 400, { error: 'bad request' }); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
