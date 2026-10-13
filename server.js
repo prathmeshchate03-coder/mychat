@@ -221,18 +221,21 @@ http.createServer((req, res) => {
     return;
   }
 
-  // ----- SEND MESSAGE (Images restricted to registered users only) -----
+  // ----- SEND MESSAGE (Supports both Text & Base64 Images) -----
   if (url.pathname === '/send' && req.method === 'POST') {
-    return readBody(req, 1500000, body => {
+    return readBody(req, 2000000, body => { // Max 2MB payload
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase();
         const user = getSessionUser(req);
-        let text = m.isImage ? String(m.text || '').slice(0, 1500000) : clean(m.text, 500);
-        const nick = user ? user.name : clean(m.nick, 20);
-
+        
+        // Agar Image hai aur User Registered/LoggedIn nahi hai toh block karein
         if (m.isImage && !user) {
           return json(res, 403, { error: 'Only registered & verified users can share images.' });
         }
+
+        let text = m.isImage ? String(m.text || '') : clean(m.text, 500);
+        const nick = user ? user.name : clean(m.nick, 20);
+
         if (!okRoom(name) || !text || !nick) { res.writeHead(400); return res.end(); }
 
         const msg = { 
@@ -244,8 +247,10 @@ http.createServer((req, res) => {
           isImage: !!m.isImage, 
           t: Date.now() 
         };
-        sent.set(msg.id, { ip, room: name, nick, text, userId: user ? user.id : '', t: msg.t });
+
+        sent.set(msg.id, { ip, room: name, nick, text, userId: user ? user.id : '', isImage: !!m.isImage, t: msg.t });
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
+        
         broadcast(name, msg);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
