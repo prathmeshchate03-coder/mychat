@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css">
 <style>
-#users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 220px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+#users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 240px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 #users .urow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
 #dms { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; width: 340px; height: 450px; z-index: 100; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 .dmbody { overflow-y: auto; padding: 10px; flex: 1; }
@@ -102,7 +102,7 @@ $('authSubmit').onclick = async () => {
   const res = await fetch('/auth/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, email, password }) });
   const j = await res.json();
   if(res.ok){
-    alert('Verification code sent! (Check server console debugCode: ' + j.debugCode + ')');
+    alert('Verification code sent!');
     $('verifyDiv').hidden = false;
     $('authTitle').textContent = 'Verify Email';$('authSubmit').hidden = true;
   } else { alert(j.error); }
@@ -174,6 +174,16 @@ function join(name){
   };
 }
 
+function reportMsg(msgId) {
+  fetch('/report', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ room, id: msgId })
+  }).then(r => r.json()).then(d => {
+    alert(d.message || 'Report submitted to admin.');
+  }).catch(() => alert('Failed to send report.'));
+}
+
 function add(m){
   const box = $('msgs');
   if(m.system){
@@ -186,7 +196,7 @@ function add(m){
   d.dataset.id = m.id;
   
   d.append(el('b', m.nick));
-  const rp = el('a', 'report'); rp.onclick = () => fetch('/report', { method: 'POST', body: JSON.stringify({ room, id: m.id }) });
+  const rp = el('a', 'report'); rp.onclick = () => reportMsg(m.id);
   d.append(rp);
 
   const bodyDiv = document.createElement('div'); bodyDiv.className = 'msg-body';
@@ -210,14 +220,34 @@ function add(m){
   box.append(d); box.scrollTop = box.scrollHeight;
 }
 
+function toggleBlockUser(targetIid) {
+  const isBlocked = !!dmBlocked[targetIid];
+  fetch('/dm/block', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dk, target: targetIid, block: !isBlocked })
+  }).then(() => {
+    if(isBlocked) delete dmBlocked[targetIid]; else dmBlocked[targetIid] = true;
+    try { localStorage.dmBlocked = JSON.stringify(dmBlocked); } catch{}
+    alert(isBlocked ? 'User unblocked' : 'User blocked');
+    renderUsers();
+  });
+}
+
 function renderUsers(){
   const c = $('cnt'); c.hidden = !users.length; c.textContent = users.length + ' online';
   const p = $('users'); p.innerHTML = '';
   users.forEach(u => {
     const row = el('div', '', 'urow');
     row.append(el('span', u.nick, 'un'));
-    if(u.iid && myIid && u.iid !== myIid && !dmBlocked[u.iid]){
-      const mb = el('button', 'Message', 'ghost sm'); mb.onclick = () => openDm(u.iid, u.nick); row.append(mb);
+    if(u.iid && myIid && u.iid !== myIid){
+      const wrap = document.createElement('div');
+      const mb = el('button', 'Message', 'ghost sm'); mb.onclick = () => openDm(u.iid, u.nick);
+      const bb = el('button', dmBlocked[u.iid] ? 'Unblock' : 'Block', 'ghost sm');
+      bb.style.color = dmBlocked[u.iid] ? '#4caf50' : '#ff4949';
+      bb.onclick = () => toggleBlockUser(u.iid);
+      wrap.append(mb, bb);
+      row.append(wrap);
     }
     p.append(row);
   });
@@ -246,6 +276,7 @@ $('dmbtn').onclick = () => { if($('dms').hidden) showDms(''); else closePanels()
 
 function renderDms(){
   const p = $('dms'); if(p.hidden) return;
+  const old = document.getElementById('dmtext'), keep = old ? old.value : '';
   p.innerHTML = '';
   if(!curThread){
     const h = el('div', '', 'dmhead'); h.append(el('b', 'Messages')); const x = el('button', 'Close', 'ghost sm'); x.onclick = closePanels; h.append(x);
@@ -304,7 +335,7 @@ function renderDms(){
           const j = await r.json().catch(()=>({}));
           t.msgs.push({ id: j.id||'', userId: currentUser.id, mine: true, text: uploadEvent.target.result, isImage: true, t: Date.now() });
           renderDms();
-        }
+        } else alert('Message failed or user blocked you.');
       });
     };
     reader.readAsDataURL(file); imgInp.value = '';
@@ -312,7 +343,7 @@ function renderDms(){
   imgBtn.onclick = () => imgInp.click();
 
   const inp = el('input'), sb = el('button', 'Send');
-  inp.type = 'text'; inp.placeholder = 'Private message';
+  inp.type = 'text'; inp.id = 'dmtext'; inp.placeholder = 'Private message'; inp.value = keep;
   sb.onclick = () => {
     const txt = inp.value.trim(); if(!txt) return; inp.value = '';
     dmCall('/dm', { to: t.iid, text: txt }).then(async r => {
@@ -320,7 +351,7 @@ function renderDms(){
         const j = await r.json().catch(()=>({}));
         t.msgs.push({ id: j.id||'', userId: currentUser ? currentUser.id : '', mine: true, text: txt, t: Date.now() });
         renderDms();
-      }
+      } else alert('Message failed or user blocked you.');
     });
   };
   inp.onkeydown = e => { if(e.key === 'Enter') sb.click(); };
