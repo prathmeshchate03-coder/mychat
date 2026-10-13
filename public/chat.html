@@ -2,14 +2,15 @@
 <title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"></head><body>
 <div id="gate" style="max-width:400px;margin:40px auto;padding:20px;background:var(--bg2);border-radius:12px">
   <a class="brand" href="/" style="justify-content:center"><img src="/logo.svg" alt="">Jen<span>Chat</span></a>
-  <p>Free guest chat or Register for permanent ID & Image Sharing.</p>
+  <p>Free guest chat or Register/Login for permanent ID & Image Sharing.</p>
   
   <div id="guestLogin">
     <input type="text" id="nick" maxlength="20" placeholder="Pick a nickname" aria-label="Nickname"><br><br>
     <label><input type="checkbox" id="age"> I am 18 or older and will be respectful</label><br><br>
     <button id="go">Enter as Guest</button>
     <hr style="margin:20px 0;border-color:var(--mut)">
-    <button id="showReg" class="ghost">Register / Login with Email</button>
+    <button id="showReg" class="ghost">Register with Email</button>
+    <button id="showLogin" class="ghost" style="margin-top:8px">Already have an account? Login</button>
   </div>
 
   <div id="authBox" hidden>
@@ -22,11 +23,23 @@
       <button id="verifyBtn" style="margin-top:5px">Verify Email</button>
     </div>
     <button id="authSubmit">Register</button>
-    <button id="backGuest" class="ghost" style="margin-top:5px">Back to Guest Login</button>
+    <button id="backGuest" class="ghost" style="margin-top:8px">Back</button>
+  </div>
+
+  <div id="loginBox" hidden>
+    <h3 style="margin-bottom:10px">Account Login</h3>
+    <input type="email" id="loginEmail" placeholder="Email Address" style="margin-bottom:10px"><br>
+    <input type="password" id="loginPass" placeholder="Password" style="margin-bottom:10px"><br>
+    <button id="loginSubmit">Login</button>
+    <button id="backGuestFromLogin" class="ghost" style="margin-top:8px">Back</button>
   </div>
 </div>
 
-<div id="app" hidden><aside id="side"><a class="brand" href="/" style="font-size:18px"><img src="/logo.svg" alt="" style="width:28px;height:28px">Jen<span>Chat</span></a>
+<div id="app" hidden><aside id="side">
+<div style="display:flex; justify-content:space-between; align-items:center;">
+  <a class="brand" href="/" style="font-size:18px"><img src="/logo.svg" alt="" style="width:28px;height:28px">Jen<span>Chat</span></a>
+  <button id="logoutBtn" class="ghost sm" style="color:#ff5555" hidden>Logout</button>
+</div>
 <input type="text" id="q" placeholder="Search rooms" aria-label="Search rooms"><div id="list"></div>
 <b>Topics</b><div class="chips" id="chips"></div>
 <input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
@@ -53,11 +66,14 @@
 const $ = id => document.getElementById(id);
 let nick = localStorage.nick, room, es, otok = '', currentUser = null, isRegistered = false;
 
+// Check session on load
 fetch('/auth/me').then(r => r.json()).then(d => {
   if(d.loggedIn){ currentUser = d; isRegistered = true; startChat(d.name); }
 }).catch(()=>{});
 
-$('showReg').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = false; };$('backGuest').onclick = () => { $('authBox').hidden = true; $('guestLogin').hidden = false; };
+$('showReg').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = false; $('loginBox').hidden = true; };
+$('showLogin').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = true; $('loginBox').hidden = false; };
+$('backGuest').onclick = () => {$('authBox').hidden = true; $('guestLogin').hidden = false; };$('backGuestFromLogin').onclick = () => { $('loginBox').hidden = true; $('guestLogin').hidden = false; };
 
 let regMode = 'register';
 $('authSubmit').onclick = async () => {
@@ -80,10 +96,30 @@ $('authSubmit').onclick = async () => {
     if(vRes.ok){
       const lRes = await fetch('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
       const lj = await lRes.json();
-      if(lRes.ok){ currentUser = lj; isRegistered = true; startChat(lj.name); }
+      if(lj.ok){ currentUser = lj; isRegistered = true; startChat(lj.name); }
       else alert(lj.error);
     } else alert(vj.error);
   }
+};
+
+$('loginSubmit').onclick = async () => {
+  const email = $('loginEmail').value.trim(), password =$('loginPass').value.trim();
+  if(!email || !password) return alert('Enter email and password');
+  const res = await fetch('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+  const j = await res.json();
+  if(res.ok){
+    currentUser = j; isRegistered = true; startChat(j.name);
+  } else {
+    alert(j.error || 'Login failed');
+  }
+};
+
+// Logout Handler
+$('logoutBtn').onclick = async () => {
+  await fetch('/auth/logout', { method: 'POST' });
+  currentUser = null;
+  isRegistered = false;
+  location.reload();
 };
 
 $('go').onclick = () => {
@@ -97,6 +133,7 @@ function startChat(name){
   nick = name;
   $('gate').hidden = true;
   $('app').hidden = false;
+  if(currentUser) $('logoutBtn').hidden = false; // Show logout button for registered users
   join(location.hash.slice(1) || 'lobby');
   loadRooms();
   setInterval(loadRooms, 5000);
@@ -156,36 +193,20 @@ function add(m){
 }
 
 $('imgUpload').onchange = (e) => {
-  if (!currentUser) {
-    alert('Images sirf registered aur verified users hi share kar sakte hain. Please pehle register/login karein.');
-    e.target.value = '';
+  if(!currentUser){
+    alert('Images sirf registered aur verified users hi share kar sakte hain. Please register/login karein.');
     return;
   }
   const file = e.target.files[0];
   if (!file) return;
-  if (file.size > 1500000) { 
-    alert('Image size 1.5MB se kam honi chahiye.'); 
-    e.target.value = '';
-    return; 
-  }
+  if (file.size > 1500000) { alert('Image size 1.5MB se kam honi chahiye.'); return; }
   const reader = new FileReader();
   reader.onload = (uploadEvent) => {
     fetch('/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        room, 
-        nick: currentUser.name, 
-        text: uploadEvent.target.result, 
-        isImage: true 
-      })
-    }).then(r => {
-      if (r.status === 403) {
-        alert('Image share karne ke liye login rehna zaroori hai.');
-      } else if (!r.ok) {
-        alert('Image send karne mein dikkat aayi.');
-      }
-    }).catch(() => alert('Network error!'));
+      body: JSON.stringify({ room, nick, text: uploadEvent.target.result, isImage: true })
+    });
   };
   reader.readAsDataURL(file);
   e.target.value = '';
@@ -193,7 +214,7 @@ $('imgUpload').onchange = (e) => {
 
 function send(){
   const t = $('text').value.trim(); if(!t) return; $('text').value = '';
-  fetch('/send', { method: 'POST', body: JSON.stringify({ room, nick, text: t }) });
+  fetch('/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, nick, text: t }) });
 }
 $('send').onclick = send;
 $('text').onkeydown = e => { if(e.key === 'Enter') send(); };
