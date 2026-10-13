@@ -1,5 +1,17 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"></head><body>
+<title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css">
+<style>
+#users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 220px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+#users .urow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
+#dms { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; width: 320px; max-height: 400px; z-index: 100; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+.dmbody { overflow-y: auto; padding: 10px; flex: 1; max-height: 300px; }
+.dmhead { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid var(--line, #34343c); }
+.dmform { display: flex; padding: 10px; border-top: 1px solid var(--line, #34343c); gap: 5px; }
+.dmform input { flex: 1; padding: 6px; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.dmrow { padding: 8px; cursor: pointer; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+.dmrow:hover { background: rgba(255,255,255,0.05); }
+</style>
+</head><body>
 <div id="gate" style="max-width:400px;margin:40px auto;padding:20px;background:var(--bg2);border-radius:12px">
   <a class="brand" href="/" style="justify-content:center"><img src="/logo.svg" alt="">Jen<span>Chat</span></a>
   <p>Free guest chat or Register/Login for permanent ID & Image Sharing.</p>
@@ -44,7 +56,7 @@
 <b>Topics</b><div class="chips" id="chips"></div>
 <input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
 <button id="priv" class="ghost">Create private room</button></aside>
-<div id="main">
+<div id="main" style="position:relative">
   <div id="head">
     <button id="menu" class="ghost" aria-label="Rooms">Rooms</button>
     <b id="rname"></b>
@@ -70,7 +82,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let nick = localStorage.nick, room, es, otok = '', currentUser = null, users = [];
+let nick = localStorage.nick, room, es, otok = '', currentUser = null, users = [], myIid = '';
 let uid = localStorage.uid; if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
 let dk = localStorage.dk; if(!/^[a-f0-9]{32}$/.test(dk||'')){dk=[...crypto.getRandomValues(new Uint8Array(16))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.dk=dk}
 let dmBlocked = {}; try{dmBlocked=JSON.parse(localStorage.dmBlocked||'{}')||{}}catch{}
@@ -96,7 +108,6 @@ $('authSubmit').onclick = async () => {
   } else { alert(j.error); }
 };
 
-// Verify Button Logic Added
 $('verifyBtn').onclick = async () => {
   const email = $('regEmail').value.trim();
   const password = $('regPass').value.trim();
@@ -150,10 +161,13 @@ function join(name){
   room = name; location.hash = name; $('rname').textContent = '#' + name; $('msgs').innerHTML = '';
   users = []; closePanels(); $('cnt').hidden = true;
   if(es) es.close();
-  es = new EventSource('/events?room=' + name + '&nick=' + encodeURIComponent(nick) + '&dk=' + dk);
+  es = new EventSource('/events?room=' + name + '&nick=' + encodeURIComponent(nick) + '&uid=' + uid + '&dk=' + dk);
   es.onmessage = e => {
     const d = JSON.parse(e.data);
-    if(d.history){ $('msgs').innerHTML = ''; d.history.forEach(add); renderUsers(); }
+    if(d.history){
+      if(d.you) myIid = d.you.iid;
+      $('msgs').innerHTML = ''; d.history.forEach(add);
+    }
     else if(d.imgdel){
       const elMsg = document.querySelector(`[data-id="${d.imgdel}"]`);
       if(elMsg){ elMsg.querySelector('.msg-body').textContent = '[Image deleted by user]'; const img = elMsg.querySelector('img'); if(img) img.remove(); const delBtn = elMsg.querySelector('.del-btn'); if(delBtn) delBtn.remove(); }
@@ -210,13 +224,12 @@ function renderUsers(){
   users.forEach(u => {
     const row = el('div', '', 'urow');
     row.append(el('span', u.nick, 'un'));
-    if(u.iid && meIid() && u.iid !== meIid() && !dmBlocked[u.iid]){
+    if(u.iid && myIid && u.iid !== myIid && !dmBlocked[u.iid]){
       const mb = el('button', 'Message', 'ghost sm'); mb.onclick = () => openDm(u.iid, u.nick); row.append(mb);
     }
     p.append(row);
   });
 }
-function meIid(){ return dk ? sha256HexSync(dk).slice(0, 16) : ''; }
 function closePanels(){ $('users').hidden = true; $('dms').hidden = true; $('cnt').setAttribute('aria-expanded','false');$('dmbtn').setAttribute('aria-expanded','false'); }
 $('cnt').onclick = () => { const open =$('users').hidden; closePanels(); $('users').hidden = !open; $('cnt').setAttribute('aria-expanded', String(open)); };
 
