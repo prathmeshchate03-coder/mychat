@@ -1,4 +1,4 @@
-// JenChat - zero-dependency guest chat server with Registration, Email Verification, Image Deletion & Logout (Node 18+)
+// JenChat - zero-dependency guest chat server with Registration, DMs, User List, Image Deletion & Logout (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -23,6 +23,17 @@ const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const okDk = s => /^[a-f0-9]{32}$/.test(s);
 const okIid = s => /^[a-f0-9]{16}$/.test(s);
 const iidOf = dk => (okDk(String(dk || '')) ? sha(dk).slice(0, 16) : '');
+const dmPairs = new Map();
+const dmBlocks = new Map();
+const dmNew = new Map();
+const dmLog = new Map();
+const DM_LOG_TTL = 12 * 3600000, DM_PAIR_TTL = 24 * 3600000;
+
+function liveByIid(iid) {
+  const out = [];
+  for (const r of rooms.values()) for (const c of r.clients) if (c.iid === iid) out.push(c);
+  return out;
+}
 
 function room(name) {
   if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', kicked: new Map() });
@@ -32,7 +43,14 @@ function room(name) {
 function sys(name, text) {
   const r = room(name);
   broadcast(name, { system: true, text, count: r.clients.size,
-    users: [...r.clients].map(c => ({ id: c.cid, iid: c.iid, nick: c.nick, owner: !!c.owner, reg: !!c.reg })) });
+    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, reg: !!c.reg })) });
+}
+
+function isKicked(r, ip) {
+  const t = r.kicked.get(ip);
+  if (!t) return false;
+  if (t < Date.now()) { r.kicked.delete(ip); return false; }
+  return true;
 }
 
 function broadcast(name, msg) {
@@ -40,6 +58,11 @@ function broadcast(name, msg) {
   if (!msg.system) { r.history.push(msg); if (r.history.length > 50) r.history.shift(); }
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   r.clients.forEach(c => c.write(data));
+}
+
+function limited(ip) {
+  const now = Date.now(), a = (hits.get(ip) || []).filter(t => now - t < 10000);
+  a.push(now); hits.set(ip, a); return a.length > 8;
 }
 
 function readBody(req, max, cb) {
@@ -74,7 +97,7 @@ http.createServer((req, res) => {
     return res.end(content);
   }
 
-  // ----- AUTHENTICATION & REGISTRATION ENDPOINTS -----
+  // ----- AUTHENTICATION ENDPOINTS -----
   if (url.pathname === '/auth/register' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       try {
@@ -90,15 +113,7 @@ http.createServer((req, res) => {
         }
         const verifyCode = Math.floor(100000 + Math.random() * 900000).toString();
         const userId = crypto.randomUUID().slice(0, 12);
-        registeredUsers.set(cleanEmail, {
-          id: userId,
-          name: cleanName,
-          email: cleanEmail,
-          passHash: sha(cleanPass),
-          verified: false,
-          code: verifyCode,
-          t: Date.now()
-        });
+        registeredUsers.set(cleanEmail, { id: userId, name: cleanName, email: cleanEmail, passHash: sha(cleanPass), verified: false, code: verifyCode, t: Date.now() });
         console.log(`Verification code for ${cleanEmail}: ${verifyCode}`);
         json(res, 200, { ok: true, message: 'Registration successful. Please verify your email.', debugCode: verifyCode });
       } catch { json(res, 400, { error: 'Bad request' }); }
@@ -182,21 +197,33 @@ http.createServer((req, res) => {
     });
   }
 
+  if (url.pathname === '/rooms') {
+    const q = clean(url.searchParams.get('q'), 30).toLowerCase();
+    const list = [...rooms].filter(([n, r]) => !n.startsWith('p-') && r.clients.size && n.includes(q) && !closed.has(n))
+      .map(([name, r]) => ({ name, count: r.clients.size })).sort((a, b) => b.count - a.count).slice(0, 30);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify(list));
+  }
+
   if (url.pathname === '/events') {
     const name = String(url.searchParams.get('room') || '').toLowerCase(), nick = clean(url.searchParams.get('nick'), 20);
     const user = getSessionUser(req);
     const finalNick = user ? user.name : nick;
-    if (!okRoom(name) || !finalNick) { res.writeHead(400); return res.end(); }
+    if (!okRoom(name) || !finalNick || (conns.get(ip) || 0) >= 5) { res.writeHead(400); return res.end(); }
     
+    conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = finalNick; res.reg = !!user;
     res.uid = user ? user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
+    res.iid = iidOf(url.searchParams.get('dk'));
+    
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: room(name).history, you: { id: res.cid, reg: res.reg, uid: res.uid } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: room(name).history, you: { id: res.cid, iid: res.iid, reg: res.reg, uid: res.uid } })}\n\n`);
     room(name).clients.add(res);
     sys(name, `${finalNick} joined`);
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
     req.on('close', () => {
       clearInterval(ping); room(name).clients.delete(res);
+      conns.set(ip, Math.max(0, (conns.get(ip) || 1) - 1));
       sys(name, `${finalNick} left`);
       if (!room(name).clients.size) setTimeout(() => { if (!room(name).clients.size) rooms.delete(name); }, 600000);
     });
@@ -232,6 +259,61 @@ http.createServer((req, res) => {
         broadcast(name, msg);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
+    });
+  }
+
+  // ----- DIRECT MESSAGES (1 to 1) -----
+  if (url.pathname === '/dm' && req.method === 'POST') {
+    return readBody(req, 2000000, body => {
+      try {
+        const m = JSON.parse(body), from = iidOf(m.dk), to = String(m.to || '');
+        let text = m.isImage ? String(m.text || '') : clean(m.text, 500);
+        if (!from || !okIid(to) || to === from || !text) return json(res, 400, { error: 'bad request' });
+        const mine = liveByIid(from);
+        if (!mine.length) return json(res, 403, { error: 'not online' });
+        const targets = liveByIid(to);
+        if (!targets.length) return json(res, 404, { error: 'offline' });
+        if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) { res.writeHead(204); res.end(); }
+        const key = [from, to].sort().join(':'), now = Date.now();
+        let pair = dmPairs.get(key), request = false;
+        if (!pair) {
+          pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true;
+        } else if (!pair.accepted) {
+          if (pair.from === from) return json(res, 409, { error: 'pending' });
+          pair.accepted = true;
+        }
+        pair.t = now;
+        const id = crypto.randomUUID().slice(0, 8);
+        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, isImage: !!m.isImage, t: now });
+        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, isImage: !!m.isImage, t: now, request } })}\n\n`;
+        targets.forEach(c => c.write(data));
+        json(res, 200, { id, t: now });
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
+
+  if (url.pathname === '/dm/accept' && req.method === 'POST') {
+    return readBody(req, 500, body => {
+      try {
+        const m = JSON.parse(body), me = iidOf(m.dk), other = String(m.from || '');
+        const pair = okIid(other) && me ? dmPairs.get([me, other].sort().join(':')) : null;
+        if (pair && pair.to === me) pair.accepted = true;
+        res.writeHead(204); res.end();
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
+
+  if (url.pathname === '/dm/block' && req.method === 'POST') {
+    return readBody(req, 4000, body => {
+      try {
+        const m = JSON.parse(body), me = iidOf(m.dk);
+        if (!me) { res.writeHead(400); return res.end(); }
+        const set = dmBlocks.get(me) || new Set();
+        (Array.isArray(m.add) ? m.add : []).forEach(i => { if (okIid(String(i))) set.add(String(i)); });
+        (Array.isArray(m.remove) ? m.remove : []).forEach(i => set.delete(String(i)));
+        if (set.size) dmBlocks.set(me, set); else dmBlocks.delete(me);
+        res.writeHead(204); res.end();
+      } catch { json(res, 400, { error: 'bad request' }); }
     });
   }
 
