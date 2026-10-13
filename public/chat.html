@@ -19,8 +19,8 @@
     <input type="email" id="regEmail" placeholder="Email Address" style="margin-bottom:10px"><br>
     <input type="password" id="regPass" placeholder="Password (min 6 chars)" style="margin-bottom:10px"><br>
     <div id="verifyDiv" hidden style="margin-bottom:10px">
-      <input type="text" id="verifyCode" placeholder="Enter 6-digit verification code">
-      <button id="verifyBtn" style="margin-top:5px">Verify Email</button>
+      <input type="text" id="verifyCode" placeholder="Enter 6-digit verification code" style="margin-bottom:8px">
+      <button id="verifyBtn" style="background:#ffd60a;color:#000;font-weight:bold;width:100%">Verify Email & Login</button>
     </div>
     <button id="authSubmit">Register</button>
     <button id="backGuest" class="ghost" style="margin-top:8px">Back</button>
@@ -44,7 +44,13 @@
 <b>Topics</b><div class="chips" id="chips"></div>
 <input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
 <button id="priv" class="ghost">Create private room</button></aside>
-<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><button id="dmbtn" class="ghost" aria-expanded="false" aria-controls="dms">Messages<span id="dmbadge" hidden></span></button><button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button></div>
+<div id="main">
+  <div id="head">
+    <button id="menu" class="ghost" aria-label="Rooms">Rooms</button>
+    <b id="rname"></b>
+    <button id="dmbtn" class="ghost" aria-expanded="false" aria-controls="dms">Messages<span id="dmbadge" hidden></span></button>
+    <button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button>
+  </div>
 <div id="users" hidden></div>
 <div id="dms" hidden></div>
 <div id="msgs" aria-live="polite"></div>
@@ -64,61 +70,62 @@
 
 <script>
 const $ = id => document.getElementById(id);
-let nick = localStorage.nick, room, es, otok = '', currentUser = null, isRegistered = false;
+let nick = localStorage.nick, room, es, otok = '', currentUser = null, users = [];
+let uid = localStorage.uid; if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
+let dk = localStorage.dk; if(!/^[a-f0-9]{32}$/.test(dk||'')){dk=[...crypto.getRandomValues(new Uint8Array(16))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.dk=dk}
+let dmBlocked = {}; try{dmBlocked=JSON.parse(localStorage.dmBlocked||'{}')||{}}catch{}
 
-// Check session on load
 fetch('/auth/me').then(r => r.json()).then(d => {
-  if(d.loggedIn){ currentUser = d; isRegistered = true; startChat(d.name); }
+  if(d.loggedIn){ currentUser = d; startChat(d.name); }
 }).catch(()=>{});
 
 $('showReg').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = false; $('loginBox').hidden = true; };
 $('showLogin').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = true; $('loginBox').hidden = false; };
 $('backGuest').onclick = () => {$('authBox').hidden = true; $('guestLogin').hidden = false; };$('backGuestFromLogin').onclick = () => { $('loginBox').hidden = true; $('guestLogin').hidden = false; };
 
-let regMode = 'register';
 $('authSubmit').onclick = async () => {
   const name = $('regName').value.trim(), email = $('regEmail').value.trim(), password =$('regPass').value.trim();
   if(!email || !password) return alert('Enter email and password');
   
-  if(regMode === 'register'){
-    const res = await fetch('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, password }) });
-    const j = await res.json();
-    if(res.ok){
-      alert('Verification code sent! (Check server console debugCode: ' + j.debugCode + ')');
-      $('verifyDiv').hidden = false;
-      $('authTitle').textContent = 'Verify Email';$('authSubmit').textContent = 'Login after Verify';
-      regMode = 'verify';
-    } else { alert(j.error); }
-  } else if(regMode === 'verify'){
-    const code = $('verifyCode').value.trim();
-    const vRes = await fetch('/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
-    const vj = await vRes.json();
-    if(vRes.ok){
-      const lRes = await fetch('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
-      const lj = await lRes.json();
-      if(lj.ok){ currentUser = lj; isRegistered = true; startChat(lj.name); }
-      else alert(lj.error);
-    } else alert(vj.error);
-  }
+  const res = await fetch('/auth/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, email, password }) });
+  const j = await res.json();
+  if(res.ok){
+    alert('Verification code sent! (Check server console debugCode: ' + j.debugCode + ')');
+    $('verifyDiv').hidden = false;
+    $('authTitle').textContent = 'Verify Email';$('authSubmit').hidden = true;
+  } else { alert(j.error); }
+};
+
+// Verify Button Logic Added
+$('verifyBtn').onclick = async () => {
+  const email = $('regEmail').value.trim();
+  const password = $('regPass').value.trim();
+  const code = $('verifyCode').value.trim();
+  if(!code) return alert('Please enter verification code');
+
+  const vRes = await fetch('/auth/verify', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, code }) });
+  const vj = await vRes.json();
+  if(vRes.ok){
+    const lRes = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, password }) });
+    const lj = await lRes.json();
+    if(lj.ok){ currentUser = lj; startChat(lj.name); }
+    else alert(lj.error);
+  } else { alert(vj.error); }
 };
 
 $('loginSubmit').onclick = async () => {
   const email = $('loginEmail').value.trim(), password =$('loginPass').value.trim();
   if(!email || !password) return alert('Enter email and password');
-  const res = await fetch('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+  const res = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, password }) });
   const j = await res.json();
   if(res.ok){
-    currentUser = j; isRegistered = true; startChat(j.name);
-  } else {
-    alert(j.error || 'Login failed');
-  }
+    currentUser = j; startChat(j.name);
+  } else { alert(j.error || 'Login failed'); }
 };
 
-// Logout Handler
 $('logoutBtn').onclick = async () => {
   await fetch('/auth/logout', { method: 'POST' });
   currentUser = null;
-  isRegistered = false;
   location.reload();
 };
 
@@ -130,10 +137,10 @@ $('go').onclick = () => {
 };
 
 function startChat(name){
-  nick = name;
+  nick = currentUser ? currentUser.name : name;
   $('gate').hidden = true;
   $('app').hidden = false;
-  if(currentUser) $('logoutBtn').hidden = false; // Show logout button for registered users
+  if(currentUser) $('logoutBtn').hidden = false;
   join(location.hash.slice(1) || 'lobby');
   loadRooms();
   setInterval(loadRooms, 5000);
@@ -141,29 +148,34 @@ function startChat(name){
 
 function join(name){
   room = name; location.hash = name; $('rname').textContent = '#' + name; $('msgs').innerHTML = '';
+  users = []; closePanels(); $('cnt').hidden = true;
   if(es) es.close();
-  es = new EventSource('/events?room=' + name + '&nick=' + encodeURIComponent(nick));
+  es = new EventSource('/events?room=' + name + '&nick=' + encodeURIComponent(nick) + '&dk=' + dk);
   es.onmessage = e => {
     const d = JSON.parse(e.data);
-    if(d.history){ $('msgs').innerHTML = ''; d.history.forEach(add); }
+    if(d.history){ $('msgs').innerHTML = ''; d.history.forEach(add); renderUsers(); }
     else if(d.imgdel){
       const elMsg = document.querySelector(`[data-id="${d.imgdel}"]`);
       if(elMsg){ elMsg.querySelector('.msg-body').textContent = '[Image deleted by user]'; const img = elMsg.querySelector('img'); if(img) img.remove(); const delBtn = elMsg.querySelector('.del-btn'); if(delBtn) delBtn.remove(); }
     }
+    else if(d.dm) onDm(d.dm);
     else add(d);
   };
 }
 
 function add(m){
   const box = $('msgs');
-  if(m.system){ box.append(el('div', m.text, 'sys')); box.scrollTop = box.scrollHeight; return; }
+  if(m.system){
+    if(m.users){ users = m.users; renderUsers(); }
+    const d = el('div', m.text, 'sys');
+    box.append(d); box.scrollTop = box.scrollHeight; return;
+  }
   
   const mine = currentUser ? m.userId === currentUser.id : m.nick === nick;
   const d = el('div', '', 'm' + (mine ? ' me' : ''));
   d.dataset.id = m.id;
   
   const b = el('b', m.nick); d.append(b);
-  
   const rp = el('a', 'report'); rp.onclick = () => fetch('/report', { method: 'POST', body: JSON.stringify({ room, id: m.id }) });
   d.append(rp);
 
@@ -192,44 +204,99 @@ function add(m){
   box.append(d); box.scrollTop = box.scrollHeight;
 }
 
-$('imgUpload').onchange = (e) => {
-  if(!currentUser){
-    alert('Images sirf registered aur verified users hi share kar sakte hain. Please register/login karein.');
-    return;
+function renderUsers(){
+  const c = $('cnt'); c.hidden = !users.length; c.textContent = users.length + ' online';
+  const p = $('users'); p.innerHTML = '';
+  users.forEach(u => {
+    const row = el('div', '', 'urow');
+    row.append(el('span', u.nick, 'un'));
+    if(u.iid && meIid() && u.iid !== meIid() && !dmBlocked[u.iid]){
+      const mb = el('button', 'Message', 'ghost sm'); mb.onclick = () => openDm(u.iid, u.nick); row.append(mb);
+    }
+    p.append(row);
+  });
+}
+function meIid(){ return dk ? sha256HexSync(dk).slice(0, 16) : ''; }
+function closePanels(){ $('users').hidden = true; $('dms').hidden = true; $('cnt').setAttribute('aria-expanded','false');$('dmbtn').setAttribute('aria-expanded','false'); }
+$('cnt').onclick = () => { const open =$('users').hidden; closePanels(); $('users').hidden = !open; $('cnt').setAttribute('aria-expanded', String(open)); };
+
+const threads = new Map(); let curThread = '';
+const dmCall = (path, body) => fetch(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dk, ...body }) });
+function thread(iid, name){ let t = threads.get(iid); if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false};threads.set(iid,t)} if(name)t.nick=name; return t; }
+function updateBadge(){ let n = 0; threads.forEach(t => n += t.unread); const b = $('dmbadge'); b.hidden = !n; b.textContent = n; }
+function onDm(m){
+  if(dmBlocked[m.from]) return;
+  const t = thread(m.from, m.nick), first = !t.msgs.length;
+  t.msgs.push({ id: m.id, mine: false, text: m.text, isImage: !!m.isImage, t: m.t });
+  if(first && m.request) t.request = true;
+  if($('dms').hidden || curThread !== m.from){ t.unread++; }
+  updateBadge(); renderDms();
+}
+function showDms(iid){
+  closePanels(); $('dms').hidden = false; $('dmbtn').setAttribute('aria-expanded','true'); curThread = iid || '';
+  if(iid){ thread(iid).unread = 0; updateBadge(); } renderDms();
+}
+function openDm(iid, name){ thread(iid, name); showDms(iid); }
+$('dmbtn').onclick = () => { if($('dms').hidden) showDms(''); else closePanels(); };
+
+function renderDms(){
+  const p = $('dms'); if(p.hidden) return;
+  p.innerHTML = '';
+  if(!curThread){
+    const h = el('div', '', 'dmhead'); h.append(el('b', 'Messages')); const x = el('button', 'Close', 'ghost sm'); x.onclick = closePanels; h.append(x);
+    const body = el('div', '', 'dmbody');
+    const list = [...threads.values()].filter(t => t.msgs.length).sort((a,b)=>b.msgs[b.msgs.length-1].t - a.msgs[a.msgs.length-1].t);
+    if(!list.length) body.append(el('p', 'No private messages yet.', 'mut'));
+    list.forEach(t => {
+      const last = t.msgs[t.msgs.length-1], row = el('div', '', 'dmrow'), info = el('div', '', 'dminfo');
+      info.append(el('b', t.nick), el('span', last.text, 'dmlast')); row.append(info);
+      if(t.unread) row.append(el('span', String(t.unread), 'dot'));
+      row.onclick = () => showDms(t.iid); body.append(row);
+    });
+    p.append(h, body); return;
   }
-  const file = e.target.files[0];
-  if (!file) return;
-  if (file.size > 1500000) { alert('Image size 1.5MB se kam honi chahiye.'); return; }
-  const reader = new FileReader();
-  reader.onload = (uploadEvent) => {
-    fetch('/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room, nick, text: uploadEvent.target.result, isImage: true })
+  const t = thread(curThread), h = el('div', '', 'dmhead'), back = el('button', 'Back', 'ghost sm');
+  back.onclick = () => { curThread = ''; renderDms(); }; h.append(back, el('b', t.nick));
+  const body = el('div', '', 'dmbody'); body.id = 'dmmsgs';
+  t.msgs.forEach(m => {
+    const d = el('div', '', 'm' + (m.mine ? ' me' : '')); d.append(el('b', m.mine ? 'You' : t.nick));
+    if(m.isImage){
+      const img = document.createElement('img'); img.src = m.text; img.style.maxWidth = '180px'; img.style.borderRadius = '8px'; img.onclick = () => openModal(m.text); d.append(img);
+    } else { d.append(el('div', m.text)); }
+    body.append(d);
+  });
+  const f = el('div', '', 'dmform');
+  const inp = el('input'), sb = el('button', 'Send');
+  inp.type = 'text'; inp.placeholder = 'Private message';
+  sb.onclick = () => {
+    const txt = inp.value.trim(); if(!txt) return; inp.value = '';
+    dmCall('/dm', { to: t.iid, text: txt }).then(async r => {
+      if(r.ok){ const j = await r.json().catch(()=>({})); t.msgs.push({ id: j.id||'', mine: true, text: txt, t: Date.now() }); renderDms(); }
     });
   };
-  reader.readAsDataURL(file);
-  e.target.value = '';
+  f.append(inp, sb); p.append(h, body, f); body.scrollTop = body.scrollHeight;
+}
+
+$('imgUpload').onchange = (e) => {
+  if(!currentUser){ alert('Images sirf registered aur verified users hi share kar sakte hain.'); return; }
+  const file = e.target.files[0]; if(!file) return;
+  if(file.size > 1500000){ alert('Image size 1.5MB se kam honi chahiye.'); return; }
+  const reader = new FileReader();
+  reader.onload = (uploadEvent) => {
+    fetch('/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, nick, text: uploadEvent.target.result, isImage: true }) });
+  };
+  reader.readAsDataURL(file); e.target.value = '';
 };
 
 function send(){
   const t = $('text').value.trim(); if(!t) return; $('text').value = '';
   fetch('/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room, nick, text: t }) });
 }
-$('send').onclick = send;
-$('text').onkeydown = e => { if(e.key === 'Enter') send(); };
+$('send').onclick = send; $('text').onkeydown = e => { if(e.key === 'Enter') send(); };
 
 $('joinbtn').onclick = () => { join($('newroom').value);$('newroom').value = ''; };
-$('priv').onclick = () => { const name = 'p-' + [...crypto.getRandomValues(new Uint8Array(6))].map(x => x.toString(16).padStart(2, '0')).join(''); join(name); };$('menu').onclick = () => $('side').classList.toggle('open');$('q').oninput = loadRooms;
-
-async function loadRooms(){
-  try {
-    const l = await (await fetch('/rooms?q=' + encodeURIComponent($('q').value))).json();$('list').innerHTML = '';
-    if(!l.length){ $('list').textContent = 'No rooms'; return; }
-    l.forEach(r => { const d = el('div', '', 'room'); d.textContent = '#' + r.name; d.onclick = () => join(r.name); $('list').append(d); });
-  } catch {}
-}
-
-function openModal(src){ $('modalImg').src = src; $('imgModal').style.display = 'flex'; }
-function el(tag, txt, cls){ const e = document.createElement(tag); if(txt) e.textContent = txt; if(cls) e.className = cls; return e; }
+$('priv').onclick = () => { const name = 'p-' + [...crypto.getRandomValues(new Uint8Array(6))].map(x=>x.toString(16).padStart(2,'0')).join(''); join(name); };$('menu').onclick = () => $('side').classList.toggle('open');$('q').oninput = loadRooms;
+async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';if(!l.length){$('list').textContent='No rooms';return}l.forEach(r=>{const d=el('div','','room');d.textContent='#'+r.name;d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
+function openModal(src){$('modalImg').src=src;$('imgModal').style.display='flex';}
+function el(tag,txt,cls){const e=document.createElement(tag);if(txt)e.textContent=txt;if(cls)e.className=cls;return e}
 </script></body></html>
