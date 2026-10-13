@@ -3,11 +3,11 @@
 <style>
 #users { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; padding: 10px; width: 220px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
 #users .urow { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 14px; }
-#dms { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; width: 320px; max-height: 400px; z-index: 100; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
-.dmbody { overflow-y: auto; padding: 10px; flex: 1; max-height: 300px; }
+#dms { position: absolute; right: 20px; top: 60px; background: var(--bg2, #1f2533); border: 1px solid var(--line, #34343c); border-radius: 8px; width: 340px; height: 450px; z-index: 100; display: flex; flex-direction: column; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+.dmbody { overflow-y: auto; padding: 10px; flex: 1; }
 .dmhead { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid var(--line, #34343c); }
-.dmform { display: flex; padding: 10px; border-top: 1px solid var(--line, #34343c); gap: 5px; }
-.dmform input { flex: 1; padding: 6px; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.dmform { display: flex; padding: 10px; border-top: 1px solid var(--line, #34343c); gap: 5px; align-items: center; }
+.dmform input[type="text"] { flex: 1; padding: 6px; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 .dmrow { padding: 8px; cursor: pointer; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
 .dmrow:hover { background: rgba(255,255,255,0.05); }
 </style>
@@ -109,9 +109,7 @@ $('authSubmit').onclick = async () => {
 };
 
 $('verifyBtn').onclick = async () => {
-  const email = $('regEmail').value.trim();
-  const password = $('regPass').value.trim();
-  const code = $('verifyCode').value.trim();
+  const email = $('regEmail').value.trim(), password = $('regPass').value.trim(), code =$('verifyCode').value.trim();
   if(!code) return alert('Please enter verification code');
 
   const vRes = await fetch('/auth/verify', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, code }) });
@@ -129,32 +127,26 @@ $('loginSubmit').onclick = async () => {
   if(!email || !password) return alert('Enter email and password');
   const res = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, password }) });
   const j = await res.json();
-  if(res.ok){
-    currentUser = j; startChat(j.name);
-  } else { alert(j.error || 'Login failed'); }
+  if(res.ok){ currentUser = j; startChat(j.name); } else { alert(j.error || 'Login failed'); }
 };
 
 $('logoutBtn').onclick = async () => {
   await fetch('/auth/logout', { method: 'POST' });
-  currentUser = null;
-  location.reload();
+  currentUser = null; location.reload();
 };
 
 $('go').onclick = () => {
   if(!$('age').checked) return alert('Please confirm you are 18 or older');
   nick = $('nick').value.trim().slice(0, 20) || 'Guest';
-  localStorage.nick = nick;
-  startChat(nick);
+  localStorage.nick = nick; startChat(nick);
 };
 
 function startChat(name){
   nick = currentUser ? currentUser.name : name;
-  $('gate').hidden = true;
-  $('app').hidden = false;
+  $('gate').hidden = true; $('app').hidden = false;
   if(currentUser) $('logoutBtn').hidden = false;
   join(location.hash.slice(1) || 'lobby');
-  loadRooms();
-  setInterval(loadRooms, 5000);
+  loadRooms(); setInterval(loadRooms, 5000);
 }
 
 function join(name){
@@ -168,9 +160,14 @@ function join(name){
       if(d.you) myIid = d.you.iid;
       $('msgs').innerHTML = ''; d.history.forEach(add);
     }
-    else if(d.imgdel){
-      const elMsg = document.querySelector(`[data-id="${d.imgdel}"]`);
-      if(elMsg){ elMsg.querySelector('.msg-body').textContent = '[Image deleted by user]'; const img = elMsg.querySelector('img'); if(img) img.remove(); const delBtn = elMsg.querySelector('.del-btn'); if(delBtn) delBtn.remove(); }
+    else if(d.imgdel || d.dmdel){
+      const msgId = d.imgdel || d.dmdel;
+      const elMsg = document.querySelector(`[data-id="${msgId}"]`);
+      if(elMsg){
+        elMsg.querySelector('.msg-body').textContent = '[Image deleted by user]';
+        const img = elMsg.querySelector('img'); if(img) img.remove();
+        const delBtn = elMsg.querySelector('.del-btn'); if(delBtn) delBtn.remove();
+      }
     }
     else if(d.dm) onDm(d.dm);
     else add(d);
@@ -181,28 +178,23 @@ function add(m){
   const box = $('msgs');
   if(m.system){
     if(m.users){ users = m.users; renderUsers(); }
-    const d = el('div', m.text, 'sys');
-    box.append(d); box.scrollTop = box.scrollHeight; return;
+    box.append(el('div', m.text, 'sys')); box.scrollTop = box.scrollHeight; return;
   }
   
   const mine = currentUser ? m.userId === currentUser.id : m.nick === nick;
   const d = el('div', '', 'm' + (mine ? ' me' : ''));
   d.dataset.id = m.id;
   
-  const b = el('b', m.nick); d.append(b);
+  d.append(el('b', m.nick));
   const rp = el('a', 'report'); rp.onclick = () => fetch('/report', { method: 'POST', body: JSON.stringify({ room, id: m.id }) });
   d.append(rp);
 
-  const bodyDiv = document.createElement('div');
-  bodyDiv.className = 'msg-body';
-  
+  const bodyDiv = document.createElement('div'); bodyDiv.className = 'msg-body';
   if(m.isImage){
-    const img = document.createElement('img');
-    img.src = m.text;
+    const img = document.createElement('img'); img.src = m.text;
     img.style.maxWidth = '200px'; img.style.maxHeight = '200px'; img.style.objectFit = 'cover';
     img.style.borderRadius = '8px'; img.style.display = 'block'; img.style.cursor = 'pointer';
-    img.onclick = () => openModal(m.text);
-    bodyDiv.append(img);
+    img.onclick = () => openModal(m.text); bodyDiv.append(img);
   } else {
     bodyDiv.textContent = m.text;
   }
@@ -211,7 +203,7 @@ function add(m){
   if(currentUser && m.userId === currentUser.id && !m.deleted){
     const delBtn = el('button', 'Delete', 'ghost sm del-btn');
     delBtn.style.marginLeft = '10px';
-    delBtn.onclick = () => fetch('/img/delete', { method: 'POST', body: JSON.stringify({ msgId: m.id }) });
+    delBtn.onclick = () => fetch('/img/delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ msgId: m.id }) });
     d.append(delBtn);
   }
 
@@ -240,7 +232,7 @@ function updateBadge(){ let n = 0; threads.forEach(t => n += t.unread); const b 
 function onDm(m){
   if(dmBlocked[m.from]) return;
   const t = thread(m.from, m.nick), first = !t.msgs.length;
-  t.msgs.push({ id: m.id, mine: false, text: m.text, isImage: !!m.isImage, t: m.t });
+  t.msgs.push({ id: m.id, userId: m.userId, mine: currentUser ? m.userId === currentUser.id : false, text: m.text, isImage: !!m.isImage, t: m.t });
   if(first && m.request) t.request = true;
   if($('dms').hidden || curThread !== m.from){ t.unread++; }
   updateBadge(); renderDms();
@@ -262,7 +254,7 @@ function renderDms(){
     if(!list.length) body.append(el('p', 'No private messages yet.', 'mut'));
     list.forEach(t => {
       const last = t.msgs[t.msgs.length-1], row = el('div', '', 'dmrow'), info = el('div', '', 'dminfo');
-      info.append(el('b', t.nick), el('span', last.text, 'dmlast')); row.append(info);
+      info.append(el('b', t.nick), el('span', last.isImage ? '📷 Photo' : last.text, 'dmlast')); row.append(info);
       if(t.unread) row.append(el('span', String(t.unread), 'dot'));
       row.onclick = () => showDms(t.iid); body.append(row);
     });
@@ -271,23 +263,69 @@ function renderDms(){
   const t = thread(curThread), h = el('div', '', 'dmhead'), back = el('button', 'Back', 'ghost sm');
   back.onclick = () => { curThread = ''; renderDms(); }; h.append(back, el('b', t.nick));
   const body = el('div', '', 'dmbody'); body.id = 'dmmsgs';
+  
   t.msgs.forEach(m => {
-    const d = el('div', '', 'm' + (m.mine ? ' me' : '')); d.append(el('b', m.mine ? 'You' : t.nick));
+    const mine = currentUser ? m.userId === currentUser.id : m.mine;
+    const d = el('div', '', 'm' + (mine ? ' me' : ''));
+    d.dataset.id = m.id;
+    d.append(el('b', mine ? 'You' : t.nick));
+
+    const bodyDiv = document.createElement('div'); bodyDiv.className = 'msg-body';
     if(m.isImage){
-      const img = document.createElement('img'); img.src = m.text; img.style.maxWidth = '180px'; img.style.borderRadius = '8px'; img.onclick = () => openModal(m.text); d.append(img);
-    } else { d.append(el('div', m.text)); }
+      const img = document.createElement('img'); img.src = m.text;
+      img.style.maxWidth = '160px'; img.style.maxHeight = '160px'; img.style.objectFit = 'cover';
+      img.style.borderRadius = '8px'; img.style.display = 'block'; img.style.cursor = 'pointer';
+      img.onclick = () => openModal(m.text); bodyDiv.append(img);
+    } else {
+      bodyDiv.textContent = m.text;
+    }
+    d.append(bodyDiv);
+
+    if(currentUser && m.userId === currentUser.id && !m.deleted){
+      const delBtn = el('button', 'Delete', 'ghost sm del-btn');
+      delBtn.style.marginLeft = '10px';
+      delBtn.onclick = () => fetch('/img/delete', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ msgId: m.id }) });
+      d.append(delBtn);
+    }
     body.append(d);
   });
+
   const f = el('div', '', 'dmform');
+  const imgBtn = el('label', '📷', 'ghost'); imgBtn.style.cursor = 'pointer'; imgBtn.title = 'Send Image';
+  const imgInp = document.createElement('input'); imgInp.type = 'file'; imgInp.accept = 'image/*'; imgInp.hidden = true;
+  imgInp.onchange = (e) => {
+    if(!currentUser){ alert('Images sirf registered users hi share kar sakte hain.'); return; }
+    const file = e.target.files[0]; if(!file) return;
+    if(file.size > 1500000){ alert('Image size 1.5MB se kam honi chahiye.'); return; }
+    const reader = new FileReader();
+    reader.onload = (uploadEvent) => {
+      dmCall('/dm', { to: t.iid, text: uploadEvent.target.result, isImage: true }).then(async r => {
+        if(r.ok){
+          const j = await r.json().catch(()=>({}));
+          t.msgs.push({ id: j.id||'', userId: currentUser.id, mine: true, text: uploadEvent.target.result, isImage: true, t: Date.now() });
+          renderDms();
+        }
+      });
+    };
+    reader.readAsDataURL(file); imgInp.value = '';
+  };
+  imgBtn.onclick = () => imgInp.click();
+
   const inp = el('input'), sb = el('button', 'Send');
   inp.type = 'text'; inp.placeholder = 'Private message';
   sb.onclick = () => {
     const txt = inp.value.trim(); if(!txt) return; inp.value = '';
     dmCall('/dm', { to: t.iid, text: txt }).then(async r => {
-      if(r.ok){ const j = await r.json().catch(()=>({})); t.msgs.push({ id: j.id||'', mine: true, text: txt, t: Date.now() }); renderDms(); }
+      if(r.ok){
+        const j = await r.json().catch(()=>({}));
+        t.msgs.push({ id: j.id||'', userId: currentUser ? currentUser.id : '', mine: true, text: txt, t: Date.now() });
+        renderDms();
+      }
     });
   };
-  f.append(inp, sb); p.append(h, body, f); body.scrollTop = body.scrollHeight;
+  inp.onkeydown = e => { if(e.key === 'Enter') sb.click(); };
+
+  f.append(imgBtn, imgInp, inp, sb); p.append(h, body, f); body.scrollTop = body.scrollHeight;
 }
 
 $('imgUpload').onchange = (e) => {
