@@ -91,12 +91,13 @@ fetch('/auth/me').then(r => r.json()).then(d => {
   if(d.loggedIn){ currentUser = d; startChat(d.name); }
 }).catch(()=>{});
 
-$('showReg').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = false; $('loginBox').hidden = true; };
-$('showLogin').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = true; $('loginBox').hidden = false; };
-$('backGuest').onclick = () => {$('authBox').hidden = true; $('guestLogin').hidden = false; };$('backGuestFromLogin').onclick = () => { $('loginBox').hidden = true; $('guestLogin').hidden = false; };
+$('showReg').onclick = () => { $('guestLogin').hidden = true; $('authBox').hidden = false; $('loginBox').hidden = true; };
+$('showLogin').onclick = () => { $('guestLogin').hidden = true; $('authBox').hidden = true; $('loginBox').hidden = false; };
+$('backGuest').onclick = () => { $('authBox').hidden = true; $('guestLogin').hidden = false; };
+$('backGuestFromLogin').onclick = () => { $('loginBox').hidden = true; $('guestLogin').hidden = false; };
 
 $('authSubmit').onclick = async () => {
-  const name = $('regName').value.trim(), email = $('regEmail').value.trim(), password =$('regPass').value.trim();
+  const name = $('regName').value.trim(), email = $('regEmail').value.trim(), password = $('regPass').value.trim();
   if(!email || !password) return alert('Enter email and password');
   
   const res = await fetch('/auth/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, email, password }) });
@@ -104,12 +105,13 @@ $('authSubmit').onclick = async () => {
   if(res.ok){
     alert('Verification code sent!');
     $('verifyDiv').hidden = false;
-    $('authTitle').textContent = 'Verify Email';$('authSubmit').hidden = true;
+    $('authTitle').textContent = 'Verify Email';
+    $('authSubmit').hidden = true;
   } else { alert(j.error); }
 };
 
 $('verifyBtn').onclick = async () => {
-  const email = $('regEmail').value.trim(), password = $('regPass').value.trim(), code =$('verifyCode').value.trim();
+  const email = $('regEmail').value.trim(), password = $('regPass').value.trim(), code = $('verifyCode').value.trim();
   if(!code) return alert('Please enter verification code');
 
   const vRes = await fetch('/auth/verify', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, code }) });
@@ -123,7 +125,7 @@ $('verifyBtn').onclick = async () => {
 };
 
 $('loginSubmit').onclick = async () => {
-  const email = $('loginEmail').value.trim(), password =$('loginPass').value.trim();
+  const email = $('loginEmail').value.trim(), password = $('loginPass').value.trim();
   if(!email || !password) return alert('Enter email and password');
   const res = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, password }) });
   const j = await res.json();
@@ -156,8 +158,9 @@ function join(name){
   es = new EventSource('/events?room=' + name + '&nick=' + encodeURIComponent(nick) + '&uid=' + uid + '&dk=' + dk);
   es.onmessage = e => {
     const d = JSON.parse(e.data);
+    if(d.you) myIid = d.you.iid;
+    
     if(d.history){
-      if(d.you) myIid = d.you.iid;
       $('msgs').innerHTML = ''; d.history.forEach(add);
     }
     else if(d.imgdel || d.dmdel){
@@ -240,7 +243,7 @@ function renderUsers(){
   users.forEach(u => {
     const row = el('div', '', 'urow');
     row.append(el('span', u.nick, 'un'));
-    if(u.iid && myIid && u.iid !== myIid){
+    if(u.iid && u.iid !== myIid){
       const wrap = document.createElement('div');
       const mb = el('button', 'Message', 'ghost sm'); mb.onclick = () => openDm(u.iid, u.nick);
       const bb = el('button', dmBlocked[u.iid] ? 'Unblock' : 'Block', 'ghost sm');
@@ -252,8 +255,8 @@ function renderUsers(){
     p.append(row);
   });
 }
-function closePanels(){ $('users').hidden = true; $('dms').hidden = true; $('cnt').setAttribute('aria-expanded','false');$('dmbtn').setAttribute('aria-expanded','false'); }
-$('cnt').onclick = () => { const open =$('users').hidden; closePanels(); $('users').hidden = !open; $('cnt').setAttribute('aria-expanded', String(open)); };
+function closePanels(){ $('users').hidden = true; $('dms').hidden = true; $('cnt').setAttribute('aria-expanded','false'); $('dmbtn').setAttribute('aria-expanded','false'); }
+$('cnt').onclick = () => { const open = $('users').hidden; closePanels(); $('users').hidden = !open; $('cnt').setAttribute('aria-expanded', String(open)); };
 
 const threads = new Map(); let curThread = '';
 const dmCall = (path, body) => fetch(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ dk, ...body }) });
@@ -262,7 +265,7 @@ function updateBadge(){ let n = 0; threads.forEach(t => n += t.unread); const b 
 
 function onDm(m){
   if(dmBlocked[m.from]) return;
-  if(currentUser && m.userId === currentUser.id) return; // Prevent duplicate display on sender's own screen
+  if(m.from === myIid || (currentUser && m.userId === currentUser.id)) return; // Prevents self-mirroring duplicate message
   
   const t = thread(m.from, m.nick), first = !t.msgs.length;
   t.msgs.push({ id: m.id, userId: m.userId, mine: false, text: m.text, isImage: !!m.isImage, t: m.t });
