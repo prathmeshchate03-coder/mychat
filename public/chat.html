@@ -65,6 +65,7 @@
     <button id="menu" class="ghost" aria-label="Rooms">Rooms</button>
     <b id="rname"></b>
     <button id="bgBtn" class="ghost sm" title="Change Room Background">🎨 BG</button>
+    <input type="file" id="roomBgUpload" accept="image/*" hidden>
     <button id="dmbtn" class="ghost" aria-expanded="false" aria-controls="dms">Messages<span id="dmbadge" hidden></span></button>
     <button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button>
   </div>
@@ -96,12 +97,13 @@ fetch('/auth/me').then(r => r.json()).then(d => {
   if(d.loggedIn){ currentUser = d; startChat(d.name); }
 }).catch(()=>{});
 
-$('showReg').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = false; $('loginBox').hidden = true; };
-$('showLogin').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = true; $('loginBox').hidden = false; };
-$('backGuest').onclick = () => {$('authBox').hidden = true; $('guestLogin').hidden = false; };$('backGuestFromLogin').onclick = () => { $('loginBox').hidden = true; $('guestLogin').hidden = false; };
+$('showReg').onclick = () => { $('guestLogin').hidden = true; $('authBox').hidden = false; $('loginBox').hidden = true; };
+$('showLogin').onclick = () => { $('guestLogin').hidden = true; $('authBox').hidden = true; $('loginBox').hidden = false; };
+$('backGuest').onclick = () => { $('authBox').hidden = true; $('guestLogin').hidden = false; };
+$('backGuestFromLogin').onclick = () => { $('loginBox').hidden = true; $('guestLogin').hidden = false; };
 
 $('authSubmit').onclick = async () => {
-  const name = $('regName').value.trim(), email = $('regEmail').value.trim(), password =$('regPass').value.trim();
+  const name = $('regName').value.trim(), email = $('regEmail').value.trim(), password = $('regPass').value.trim();
   if(!email || !password) return alert('Enter email and password');
   
   const res = await fetch('/auth/register', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, email, password }) });
@@ -109,12 +111,13 @@ $('authSubmit').onclick = async () => {
   if(res.ok){
     alert('Verification code sent! Code: ' + j.debugCode);
     $('verifyDiv').hidden = false;
-    $('authTitle').textContent = 'Verify Email';$('authSubmit').hidden = true;
+    $('authTitle').textContent = 'Verify Email';
+    $('authSubmit').hidden = true;
   } else { alert(j.error); }
 };
 
 $('verifyBtn').onclick = async () => {
-  const email = $('regEmail').value.trim(), password = $('regPass').value.trim(), code =$('verifyCode').value.trim();
+  const email = $('regEmail').value.trim(), password = $('regPass').value.trim(), code = $('verifyCode').value.trim();
   if(!code) return alert('Please enter verification code');
 
   const vRes = await fetch('/auth/verify', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, code }) });
@@ -128,7 +131,7 @@ $('verifyBtn').onclick = async () => {
 };
 
 $('loginSubmit').onclick = async () => {
-  const email = $('loginEmail').value.trim(), password =$('loginPass').value.trim();
+  const email = $('loginEmail').value.trim(), password = $('loginPass').value.trim();
   if(!email || !password) return alert('Enter email and password');
   const res = await fetch('/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, password }) });
   const j = await res.json();
@@ -167,18 +170,35 @@ function applyRoomBg(bg){
   }
 }
 
+// Room Background Upload from Gallery
 $('bgBtn').onclick = () => {
   if(!['owner', 'co-admin', 'mod'].includes(myRole)){
     return alert('Only Room Owner, Co-Admin, or Moderator can change room background.');
   }
-  const bg = prompt('Enter background color (e.g. #111, crimson) or Image URL:');
-  if(bg === null) return;
+  const choice = confirm("Press OK to select image from Gallery, or Cancel to enter Color/URL");
+  if(choice) {
+    $('roomBgUpload').click();
+  } else {
+    const bg = prompt('Enter background color (e.g. #111, crimson) or Image URL:');
+    if(bg !== null) setRoomBg(bg);
+  }
+};
+
+$('roomBgUpload').onchange = (e) => {
+  const file = e.target.files[0]; if(!file) return;
+  if(file.size > 2000000){ alert('Image size should be less than 2MB.'); return; }
+  const reader = new FileReader();
+  reader.onload = (ev) => setRoomBg(ev.target.result);
+  reader.readAsDataURL(file); e.target.value = '';
+};
+
+function setRoomBg(bg) {
   fetch('/room/bg', {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ room, background: bg })
   }).then(r => { if(!r.ok) alert('Unauthorized to change BG.'); });
-};
+}
 
 function join(name){
   room = name; location.hash = name; $('rname').textContent = '#' + name; $('msgs').innerHTML = '';
@@ -295,7 +315,6 @@ function renderUsers(){
     const row = el('div', '', 'urow');
     const nickSpan = el('span', u.nick, 'un');
     
-    // Add Role Badge
     if(u.role && u.role !== 'member'){
       const badge = el('span', u.role, 'badge-role role-' + u.role.replace('-',''));
       nickSpan.append(badge);
@@ -311,7 +330,6 @@ function renderUsers(){
       wrap.append(mb, bb);
     }
 
-    // Owner only Staff Assign dropdown
     if(myRole === 'owner' && u.uid && u.uid !== currentUser.id){
       const sel = document.createElement('select');
       sel.style.fontSize = '11px'; sel.style.padding = '2px'; sel.style.marginLeft = '4px';
@@ -399,17 +417,38 @@ function renderDms(){
   back.onclick = () => { curThread = ''; renderDms(); }; 
 
   const dmBgBtn = el('button', '🎨 BG', 'ghost sm');
+  const dmBgUpload = document.createElement('input'); dmBgUpload.type = 'file'; dmBgUpload.accept = 'image/*'; dmBgUpload.hidden = true;
+  
+  dmBgUpload.onchange = (e) => {
+    const file = e.target.files[0]; if(!file) return;
+    if(file.size > 2000000){ alert('Image size should be less than 2MB.'); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      dmCall('/dm/bg', { to: t.iid, background: ev.target.result }).then(() => {
+        t.background = ev.target.result;
+        applyDmBg(ev.target.result);
+      });
+    };
+    reader.readAsDataURL(file); dmBgUpload.value = '';
+  };
+
   dmBgBtn.onclick = () => {
-    const bg = prompt('Enter DM background color or Image URL:');
-    if(bg === null) return;
-    dmCall('/dm/bg', { to: t.iid, background: bg }).then(() => {
-      t.background = bg;
-      applyDmBg(bg);
-    });
+    const choice = confirm("Press OK to select image from Gallery, or Cancel to enter Color/URL");
+    if(choice) {
+      dmBgUpload.click();
+    } else {
+      const bg = prompt('Enter DM background color or Image URL:');
+      if(bg !== null) {
+        dmCall('/dm/bg', { to: t.iid, background: bg }).then(() => {
+          t.background = bg;
+          applyDmBg(bg);
+        });
+      }
+    }
   };
 
   const titleWrap = document.createElement('div'); titleWrap.style.display = 'flex'; titleWrap.style.alignItems = 'center'; titleWrap.style.gap = '8px';
-  titleWrap.append(el('b', t.nick), dmBgBtn);
+  titleWrap.append(el('b', t.nick), dmBgBtn, dmBgUpload);
   h.append(back, titleWrap);
 
   const body = el('div', '', 'dmbody'); body.id = 'dmmsgs';
