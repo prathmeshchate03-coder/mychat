@@ -1,9 +1,24 @@
-// JenChat - zero-dependency guest chat server with Registration, DMs, Reports, Admin Data, Image Sharing & Persistent Deletion (Node 18+)
+// JenChat - zero-dependency guest chat server with Unique Username & JSON Persistence (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
 const rooms = new Map(), hits = new Map(), conns = new Map();
+
+// Persistent User Storage via JSON file
+const USERS_FILE = path.join(__dirname, 'users.json');
 const registeredUsers = new Map();
+if (fs.existsSync(USERS_FILE)) {
+  try {
+    const data = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+    for (const [k, v] of Object.entries(data)) registeredUsers.set(k, v);
+  } catch (e) { console.error('Error loading users:', e); }
+}
+function saveUsers() {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(Object.fromEntries(registeredUsers), null, 2));
+  } catch (e) { console.error('Error saving users:', e); }
+}
+
 const activeSessions = new Map();
 const sent = new Map();       
 const reports = [];           
@@ -83,6 +98,7 @@ http.createServer((req, res) => {
     return res.end(content);
   }
 
+  // --- Registration with Unique Email & Unique Username check ---
   if (url.pathname === '/auth/register' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       try {
@@ -90,13 +106,26 @@ http.createServer((req, res) => {
         const cleanEmail = clean(email, 50).toLowerCase();
         const cleanName = clean(name, 20);
         const cleanPass = String(password || '');
+
         if (!cleanEmail || !cleanPass || !cleanName || cleanPass.length < 6) {
           return json(res, 400, { error: 'Invalid details or password too short (min 6 chars)' });
         }
-        if (registeredUsers.has(cleanEmail)) return json(res, 400, { error: 'Email already registered' });
+        if (registeredUsers.has(cleanEmail)) {
+          return json(res, 400, { error: 'Email already registered' });
+        }
+
+        // Check if username is already taken by anyone else
+        for (const user of registeredUsers.values()) {
+          if (user.name.toLowerCase() === cleanName.toLowerCase()) {
+            return json(res, 400, { error: 'Username already taken. Please choose another.' });
+          }
+        }
+
         const verifyCode = Math.floor(100000 + Math.random() * 900000).toString();
         const userId = crypto.randomUUID().slice(0, 12);
         registeredUsers.set(cleanEmail, { id: userId, name: cleanName, email: cleanEmail, passHash: sha(cleanPass), verified: false, code: verifyCode, t: Date.now() });
+        saveUsers();
+
         console.log(`Verification code for ${cleanEmail}: ${verifyCode}`);
         json(res, 200, { ok: true, message: 'Registration successful', debugCode: verifyCode });
       } catch { json(res, 400, { error: 'Bad request' }); }
@@ -107,9 +136,11 @@ http.createServer((req, res) => {
     return readBody(req, 1000, body => {
       try {
         const { email, code } = JSON.parse(body);
-        const user = registeredUsers.get(clean(email, 50).toLowerCase());
+        const cleanEmail = clean(email, 50).toLowerCase();
+        const user = registeredUsers.get(cleanEmail);
         if (!user || user.code !== String(code).trim()) return json(res, 400, { error: 'Invalid verification code' });
         user.verified = true; user.code = '';
+        saveUsers();
         json(res, 200, { ok: true, message: 'Email verified successfully!' });
       } catch { json(res, 400, { error: 'Bad request' }); }
     });
@@ -119,12 +150,22 @@ http.createServer((req, res) => {
     return readBody(req, 1000, body => {
       try {
         const { email, password } = JSON.parse(body);
-        const user = registeredUsers.get(clean(email, 50).toLowerCase());
-        if (!user || user.passHash !== sha(String(password || ''))) return json(res, 400, { error: 'Invalid email or password' });
+        const inputStr = clean(email, 50).toLowerCase();
+        let user = registeredUsers.get(inputStr);
+
+        // Allow login using Username as well as Email
+        if (!user) {
+          for (const u of registeredUsers.values()) {
+            if (u.name.toLowerCase() === inputStr) { user = u; break; }
+          }
+        }
+
+        if (!user || user.passHash !== sha(String(password || ''))) return json(res, 400, { error: 'Invalid email/username or password' });
         if (!user.verified) return json(res, 403, { error: 'Email not verified.' });
+
         const sessionId = crypto.randomUUID();
         activeSessions.set(sessionId, user.email);
-        res.setHeader('Set-Cookie', `session=${sessionId}; Path=/; HttpOnly; SameSite=Strict`);
+        res.setHeader('Set-Cookie', `session=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`);
         json(res, 200, { ok: true, name: user.name, id: user.id });
       } catch { json(res, 400, { error: 'Bad request' }); }
     });
@@ -227,7 +268,6 @@ http.createServer((req, res) => {
     });
   }
 
-  // --- PERSISTENT IMAGE / MESSAGE DELETION FIX ---
   if (url.pathname === '/img/delete' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
@@ -237,12 +277,10 @@ http.createServer((req, res) => {
         const msg = sent.get(msgId);
         if (!msg || msg.userId !== user.id) return json(res, 403, { error: 'Unauthorized' });
 
-        // Update central tracking object
         msg.text = '[Image deleted by user]'; 
         msg.isImage = false; 
         msg.deleted = true;
 
-        // Update Public Room persistent history memory
         for (const r of rooms.values()) {
           r.history.forEach(h => {
             if (h.id === msgId) { 
@@ -255,7 +293,6 @@ http.createServer((req, res) => {
           r.clients.forEach(c => c.write(delEvent));
         }
 
-        // Update DM persistent memory
         const dmMsg = dmLog.get(msgId);
         if (dmMsg) {
           dmMsg.text = '[Image deleted by user]'; 
@@ -319,7 +356,7 @@ http.createServer((req, res) => {
         sent.set(msg.id, msg);
         broadcast(name, msg);
         res.writeHead(204); res.end();
-      } catch { res.writeHead(400); res.end(); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
@@ -346,7 +383,7 @@ http.createServer((req, res) => {
         let pair = dmPairs.get(key), request = false;
         if (!pair) { pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true; }
         else if (!pair.accepted) {
-          if (pair.from === from) return json(res, 409, { error: 'pending' });
+          if (pair.from === from) return json(res, 409, {, error: 'pending' });
           pair.accepted = true;
         }
         pair.t = now;
