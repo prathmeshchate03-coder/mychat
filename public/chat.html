@@ -50,112 +50,109 @@
 </div>
 
 <script>
-const $=id=>document.getElementById(id);
-let nick=localStorage.nick,room,es,otok='',currentUser=null,isRegistered=false;
+const $ = id => document.getElementById(id);
+let nick = localStorage.nick, room, es, otok = '', currentUser = null, isRegistered = false;
 
-// Check if already logged in via session
-fetch('/auth/me').then(r=>r.json()).then(d=>{
-  if(d.loggedIn){ currentUser=d; isRegistered=true; startChat(d.name); }
+fetch('/auth/me').then(r => r.json()).then(d => {
+  if(d.loggedIn){ currentUser = d; isRegistered = true; startChat(d.name); }
 }).catch(()=>{});
 
-$('showReg').onclick=()=>{$('guestLogin').hidden=true; $('authBox').hidden=false; }$('backGuest').onclick=()=>{ $('authBox').hidden=true; $('guestLogin').hidden=false; }
+$('showReg').onclick = () => {$('guestLogin').hidden = true; $('authBox').hidden = false; };$('backGuest').onclick = () => { $('authBox').hidden = true; $('guestLogin').hidden = false; };
 
-let regMode='register'; // or 'verify'
-$('authSubmit').onclick=async()=>{
-  const name=$('regName').value.trim(), email=$('regEmail').value.trim(), password=$('regPass').value.trim();
+let regMode = 'register';
+$('authSubmit').onclick = async () => {
+  const name = $('regName').value.trim(), email = $('regEmail').value.trim(), password =$('regPass').value.trim();
   if(!email || !password) return alert('Enter email and password');
   
-  if(regMode==='register'){
-    const res=await fetch('/auth/register',{method:'POST',body:JSON.stringify({name,email,password})});
-    const j=await res.json();
+  if(regMode === 'register'){
+    const res = await fetch('/auth/register', { method: 'POST', body: JSON.stringify({ name, email, password }) });
+    const j = await res.json();
     if(res.ok){
-      alert('Verification code sent! (Check server console debugCode: '+j.debugCode+')');
-      $('verifyDiv').hidden=false;
-      $('authTitle').textContent='Verify Email';$('authSubmit').textContent='Login after Verify';
-      regMode='verify';
-    }else{ alert(j.error); }
-  } else if(regMode==='verify'){
-    const code=$('verifyCode').value.trim();
-    const vRes=await fetch('/auth/verify',{method:'POST',body:JSON.stringify({email,code})});
-    const vj=await vRes.json();
+      alert('Verification code sent! (Check server console debugCode: ' + j.debugCode + ')');
+      $('verifyDiv').hidden = false;
+      $('authTitle').textContent = 'Verify Email';$('authSubmit').textContent = 'Login after Verify';
+      regMode = 'verify';
+    } else { alert(j.error); }
+  } else if(regMode === 'verify'){
+    const code = $('verifyCode').value.trim();
+    const vRes = await fetch('/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
+    const vj = await vRes.json();
     if(vRes.ok){
-      // Now login
-      const lRes=await fetch('/auth/login',{method:'POST',body:JSON.stringify({email,password})});
-      const lj=await lRes.json();
-      if(lRes.ok){ currentUser=lj; isRegistered=true; startChat(lj.name); }
+      const lRes = await fetch('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+      const lj = await lRes.json();
+      if(lRes.ok){ currentUser = lj; isRegistered = true; startChat(lj.name); }
       else alert(lj.error);
-    }else alert(vj.error);
+    } else alert(vj.error);
   }
 };
 
-$('go').onclick=()=>{
+$('go').onclick = () => {
   if(!$('age').checked) return alert('Please confirm you are 18 or older');
-  nick=$('nick').value.trim().slice(0,20)||'Guest';
-  localStorage.nick=nick;
+  nick = $('nick').value.trim().slice(0, 20) || 'Guest';
+  localStorage.nick = nick;
   startChat(nick);
 };
 
 function startChat(name){
-  nick=name;
-  $('gate').hidden=true;
-  $('app').hidden=false;
-  join(location.hash.slice(1)||'lobby');
+  nick = name;
+  $('gate').hidden = true;
+  $('app').hidden = false;
+  join(location.hash.slice(1) || 'lobby');
   loadRooms();
-  setInterval(loadRooms,5000);
+  setInterval(loadRooms, 5000);
 }
 
 function join(name){
-  room=name; location.hash=name; $('rname').textContent='#'+name; $('msgs').innerHTML='';
+  room = name; location.hash = name; $('rname').textContent = '#' + name; $('msgs').innerHTML = '';
   if(es) es.close();
-  es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick));
-  es.onmessage=e=>{
-    const d=JSON.parse(e.data);
-    if(d.history){ $('msgs').innerHTML=''; d.history.forEach(add); }
+  es = new EventSource('/events?room=' + name + '&nick=' + encodeURIComponent(nick));
+  es.onmessage = e => {
+    const d = JSON.parse(e.data);
+    if(d.history){ $('msgs').innerHTML = ''; d.history.forEach(add); }
     else if(d.imgdel){
-      const elMsg=document.querySelector(`[data-id="${d.imgdel}"]`);
-      if(elMsg){ elMsg.querySelector('.msg-body').textContent='[Image deleted by user]'; const img=elMsg.querySelector('img'); if(img) img.remove(); const delBtn=elMsg.querySelector('.del-btn'); if(delBtn) delBtn.remove(); }
+      const elMsg = document.querySelector(`[data-id="${d.imgdel}"]`);
+      if(elMsg){ elMsg.querySelector('.msg-body').textContent = '[Image deleted by user]'; const img = elMsg.querySelector('img'); if(img) img.remove(); const delBtn = elMsg.querySelector('.del-btn'); if(delBtn) delBtn.remove(); }
     }
     else add(d);
   };
 }
 
 function add(m){
-  const box=$('msgs');
-  if(m.system){ box.append(el('div',m.text,'sys')); box.scrollTop=box.scrollHeight; return; }
+  const box = $('msgs');
+  if(m.system){ box.append(el('div', m.text, 'sys')); box.scrollTop = box.scrollHeight; return; }
   
-  const mine = currentUser ? m.userId===currentUser.id : m.nick===nick;
-  const d=el('div','','m'+(mine?' me':''));
-  d.dataset.id=m.id;
+  const mine = currentUser ? m.userId === currentUser.id : m.nick === nick;
+  const d = el('div', '', 'm' + (mine ? ' me' : ''));
+  d.dataset.id = m.id;
   
-  const b=el('b',m.nick); d.append(b);
+  const b = el('b', m.nick); d.append(b);
   
-  const rp=el('a','report'); rp.onclick=()=>fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});
+  const rp = el('a', 'report'); rp.onclick = () => fetch('/report', { method: 'POST', body: JSON.stringify({ room, id: m.id }) });
   d.append(rp);
 
-  const bodyDiv=document.createElement('div');
-  bodyDiv.className='msg-body';
+  const bodyDiv = document.createElement('div');
+  bodyDiv.className = 'msg-body';
   
   if(m.isImage){
-    const img=document.createElement('img');
-    img.src=m.text;
-    img.style.maxWidth='200px'; img.style.maxHeight='200px'; img.style.objectFit='cover';
-    img.style.borderRadius='8px'; img.style.display='block'; img.style.cursor='pointer';
-    img.onclick=()=>openModal(m.text);
+    const img = document.createElement('img');
+    img.src = m.text;
+    img.style.maxWidth = '200px'; img.style.maxHeight = '200px'; img.style.objectFit = 'cover';
+    img.style.borderRadius = '8px'; img.style.display = 'block'; img.style.cursor = 'pointer';
+    img.onclick = () => openModal(m.text);
     bodyDiv.append(img);
   } else {
-    bodyDiv.textContent=m.text;
+    bodyDiv.textContent = m.text;
   }
   d.append(bodyDiv);
 
-  // Delete button if message belongs to current logged in user and has image or text
-  if(currentUser && m.userId===currentUser.id && !m.deleted){
-    const delBtn=el('button','Delete','ghost sm del-btn');
-    delBtn.style.marginLeft='10px';
-    delBtn.onclick=()=>fetch('/img/delete',{method:'POST',body:JSON.stringify({msgId:m.id})});
+  if(currentUser && m.userId === currentUser.id && !m.deleted){
+    const delBtn = el('button', 'Delete', 'ghost sm del-btn');
+    delBtn.style.marginLeft = '10px';
+    delBtn.onclick = () => fetch('/img/delete', { method: 'POST', body: JSON.stringify({ msgId: m.id }) });
     d.append(delBtn);
   }
 
-  box.append(d); box.scrollTop=box.scrollHeight;
+  box.append(d); box.scrollTop = box.scrollHeight;
 }
 
 $('imgUpload').onchange = (e) => {
@@ -178,15 +175,23 @@ $('imgUpload').onchange = (e) => {
 };
 
 function send(){
-  const t=$('text').value.trim(); if(!t) return; $('text').value='';
-  fetch('/send',{method:'POST',body:JSON.stringify({room,nick,text:t})});
+  const t = $('text').value.trim(); if(!t) return; $('text').value = '';
+  fetch('/send', { method: 'POST', body: JSON.stringify({ room, nick, text: t }) });
 }
-$('send').onclick=send;
-$('text').onkeydown=e=>{if(e.key==='Enter')send()};
+$('send').onclick = send;
+$('text').onkeydown = e => { if(e.key === 'Enter') send(); };
 
-$('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
-$('priv').onclick=()=>{const name='p-'+[...crypto.getRandomValues(new Uint8Array(6))].map(x=>x.toString(16).padStart(2,'0')).join('');join(name);};$('menu').onclick=()=>$('side').classList.toggle('open');$('q').oninput=loadRooms;
-async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';if(!l.length){$('list').textContent='No rooms';return}l.forEach(r=>{const d=el('div','','room');d.textContent='#'+r.name;d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
-function openModal(src){$('modalImg').src=src;$('imgModal').style.display='flex';}
-function el(tag,txt,cls){const e=document.createElement(tag);if(txt)e.textContent=txt;if(cls)e.className=cls;return e}
+$('joinbtn').onclick = () => { join($('newroom').value);$('newroom').value = ''; };
+$('priv').onclick = () => { const name = 'p-' + [...crypto.getRandomValues(new Uint8Array(6))].map(x => x.toString(16).padStart(2, '0')).join(''); join(name); };$('menu').onclick = () => $('side').classList.toggle('open');$('q').oninput = loadRooms;
+
+async function loadRooms(){
+  try {
+    const l = await (await fetch('/rooms?q=' + encodeURIComponent($('q').value))).json();$('list').innerHTML = '';
+    if(!l.length){ $('list').textContent = 'No rooms'; return; }
+    l.forEach(r => { const d = el('div', '', 'room'); d.textContent = '#' + r.name; d.onclick = () => join(r.name); $('list').append(d); });
+  } catch {}
+}
+
+function openModal(src){ $('modalImg').src = src; $('imgModal').style.display = 'flex'; }
+function el(tag, txt, cls){ const e = document.createElement(tag); if(txt) e.textContent = txt; if(cls) e.className = cls; return e; }
 </script></body></html>
