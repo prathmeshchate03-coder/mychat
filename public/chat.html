@@ -163,6 +163,16 @@ function join(name){
     }
     else if(d.imgdel || d.dmdel){
       const msgId = d.imgdel || d.dmdel;
+      // Update persistent threads memory so re-opening DM reflects deletion
+      threads.forEach(t => {
+        t.msgs.forEach(m => {
+          if(m.id === msgId) {
+            m.text = '[Image deleted by user]';
+            m.isImage = false;
+            m.deleted = true;
+          }
+        });
+      });
       const elMsg = document.querySelector(`[data-id="${msgId}"]`);
       if(elMsg){
         elMsg.querySelector('.msg-body').textContent = '[Image deleted by user]';
@@ -201,13 +211,13 @@ function add(m){
   d.append(rp);
 
   const bodyDiv = document.createElement('div'); bodyDiv.className = 'msg-body';
-  if(m.isImage){
+  if(m.isImage && !m.deleted){
     const img = document.createElement('img'); img.src = m.text;
     img.style.maxWidth = '200px'; img.style.maxHeight = '200px'; img.style.objectFit = 'cover';
     img.style.borderRadius = '8px'; img.style.display = 'block'; img.style.cursor = 'pointer';
     img.onclick = () => openModal(m.text); bodyDiv.append(img);
   } else {
-    bodyDiv.textContent = m.text;
+    bodyDiv.textContent = m.deleted ? '[Image deleted by user]' : m.text;
   }
   d.append(bodyDiv);
 
@@ -266,7 +276,7 @@ function onDm(m){
   if(m.from === myIid || (currentUser && m.userId === currentUser.id)) return;
   
   const t = thread(m.from, m.nick), first = !t.msgs.length;
-  t.msgs.push({ id: m.id, userId: m.userId, mine: false, text: m.text, isImage: !!m.isImage, t: m.t });
+  t.msgs.push({ id: m.id, userId: m.userId, mine: false, text: m.text, isImage: !!m.isImage, deleted: !!m.deleted, t: m.t });
   if(first && m.request) t.request = true;
   if($('dms').hidden || curThread !== m.from){ t.unread++; }
   updateBadge(); renderDms();
@@ -290,7 +300,7 @@ function renderDms(){
     if(!list.length) body.append(el('p', 'No private messages yet.', 'mut'));
     list.forEach(t => {
       const last = t.msgs[t.msgs.length-1], row = el('div', '', 'dmrow'), info = el('div', '', 'dminfo');
-      info.append(el('b', t.nick), el('span', last.isImage ? '📷 Photo' : last.text, 'dmlast')); row.append(info);
+      info.append(el('b', t.nick), el('span', last.deleted ? '[Image deleted]' : (last.isImage ? '📷 Photo' : last.text), 'dmlast')); row.append(info);
       if(t.unread) row.append(el('span', String(t.unread), 'dot'));
       row.onclick = () => showDms(t.iid); body.append(row);
     });
@@ -307,13 +317,13 @@ function renderDms(){
     d.append(el('b', mine ? 'You' : t.nick));
 
     const bodyDiv = document.createElement('div'); bodyDiv.className = 'msg-body';
-    if(m.isImage){
+    if(m.isImage && !m.deleted){
       const img = document.createElement('img'); img.src = m.text;
       img.style.maxWidth = '160px'; img.style.maxHeight = '160px'; img.style.objectFit = 'cover';
       img.style.borderRadius = '8px'; img.style.display = 'block'; img.style.cursor = 'pointer';
       img.onclick = () => openModal(m.text); bodyDiv.append(img);
     } else {
-      bodyDiv.textContent = m.text;
+      bodyDiv.textContent = m.deleted ? '[Image deleted by user]' : m.text;
     }
     d.append(bodyDiv);
 
@@ -338,7 +348,7 @@ function renderDms(){
       dmCall('/dm', { to: t.iid, text: uploadEvent.target.result, isImage: true }).then(async r => {
         if(r.ok){
           const j = await r.json().catch(()=>({}));
-          t.msgs.push({ id: j.id||'', userId: currentUser.id, mine: true, text: uploadEvent.target.result, isImage: true, t: Date.now() });
+          t.msgs.push({ id: j.id||'', userId: currentUser.id, mine: true, text: uploadEvent.target.result, isImage: true, deleted: false, t: Date.now() });
           renderDms();
         } else alert('Message failed or user blocked you.');
       });
@@ -354,7 +364,7 @@ function renderDms(){
     dmCall('/dm', { to: t.iid, text: txt }).then(async r => {
       if(r.ok){
         const j = await r.json().catch(()=>({}));
-        t.msgs.push({ id: j.id||'', userId: currentUser ? currentUser.id : '', mine: true, text: txt, t: Date.now() });
+        t.msgs.push({ id: j.id||'', userId: currentUser ? currentUser.id : '', mine: true, text: txt, deleted: false, t: Date.now() });
         renderDms();
       } else alert('Message failed or user blocked you.');
     });
