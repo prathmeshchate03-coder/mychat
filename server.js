@@ -1,12 +1,12 @@
-// JenChat - zero-dependency guest chat server with Registration, DMs, Reports, Image Sharing & Deletion (Node 18+)
+// JenChat - zero-dependency guest chat server with Registration, DMs, Reports, Admin Data, Image Sharing & Deletion (Node 18+)
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123'; // Default admin token if not set
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'admin123';
 const rooms = new Map(), hits = new Map(), conns = new Map();
 const registeredUsers = new Map(); // email -> { id, name, passHash, verified, code, t }
 const activeSessions = new Map();  // sessionId -> email
 const sent = new Map();       
-const reports = [];           // Array to store reported messages
+const reports = [];           // Reported messages log
 const bans = new Map();       // IP bans
 const closed = new Map();     // Closed rooms
 const seo = require('./seo');
@@ -20,7 +20,7 @@ const okDk = s => /^[a-f0-9]{32}$/.test(s);
 const okIid = s => /^[a-f0-9]{16}$/.test(s);
 const iidOf = dk => (okDk(String(dk || '')) ? sha(dk).slice(0, 16) : '');
 const dmPairs = new Map();
-const dmBlocks = new Map();
+const dmBlocks = new Map(); // iid -> Set of blocked iids
 const dmLog = new Map();
 
 function liveByIid(iid) {
@@ -145,56 +145,89 @@ http.createServer((req, res) => {
     res.writeHead(204); res.end(); return;
   }
 
-  // --- REPORT ENDPOINT (Restored) ---
+  // --- REPORT ENDPOINT ---
   if (url.pathname === '/report' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       try {
-        const { room, id } = JSON.parse(body);
-        const r = rooms.get(room);
-        if (r) {
-          const msg = r.history.find(h => h.id === id);
-          if (msg) {
-            reports.push({ room, id, nick: msg.nick, text: msg.text, t: Date.now(), ip: msg.ip || 'unknown' });
-            if (reports.length > 100) reports.shift();
-          }
+        const { room: roomName, id } = JSON.parse(body);
+        const r = rooms.get(roomName);
+        let msg = r ? r.history.find(h => h.id === id) : null;
+        if (!msg) msg = sent.get(id);
+        if (msg) {
+          reports.push({
+            id: msg.id || id,
+            room: roomName || 'DM/Global',
+            nick: msg.nick || 'Unknown',
+            text: msg.isImage ? '[Image Shared]' : msg.text,
+            t: Date.now(),
+            ip: msg.ip || ip
+          });
+          if (reports.length > 200) reports.shift();
+          json(res, 200, { ok: true, message: 'Reported successfully' });
+        } else {
+          json(res, 404, { error: 'Message not found to report' });
         }
-        res.writeHead(204); res.end();
-      } catch { res.writeHead(400); res.end(); }
+      } catch { json(res, 400, { error: 'Bad request' }); }
     });
   }
 
   // --- ADMIN API ENDPOINTS ---
   if (url.pathname === '/admin/data' && req.method === 'GET') {
     const auth = req.headers['authorization'] || '';
-    const token = auth.replace('Bearer ', '');
+    const token = auth.replace('Bearer ', '').trim();
     if (ADMIN_TOKEN && token !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
-    
-    const liveRoomsList = [...rooms].map(([name, r]) => ({ name, count: r.clients.size }));
-    const bannedList = [...bans.entries()].map(([ip, exp]) => ({ ip, exp }));
+
+    const liveRoomsList = [...rooms.entries()].map(([name, r]) => ({
+      name,
+      count: r.clients.size,
+      users: [...r.clients].map(c => c.nick)
+    }));
+    const bannedList = [...bans.entries()].map(([bip, exp]) => ({ ip: bip, exp }));
     json(res, 200, { reports, rooms: liveRoomsList, closed: [...closed.keys()], banned: bannedList });
   }
 
   if (url.pathname === '/admin/close' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       const auth = req.headers['authorization'] || '';
-      if (ADMIN_TOKEN && auth.replace('Bearer ', '') !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
+      if (ADMIN_TOKEN && auth.replace('Bearer ', '').trim() !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
       try {
-        const { room } = JSON.parse(body);
-        if (room) { closed.set(room, true); rooms.delete(room); }
+        const { room: roomName } = JSON.parse(body);
+        if (roomName) {
+          closed.set(roomName, true);
+          const r = rooms.get(roomName);
+          if (r) {
+            broadcast(roomName, { system: true, text: 'This room has been closed by admin.' });
+            rooms.delete(roomName);
+          }
+        }
         res.writeHead(204); res.end();
-      } catch { res.writeHead(400); res.end(); }
+      } catch { json(res, 400, { error: 'Bad request' }); }
     });
   }
 
   if (url.pathname === '/admin/ban' && req.method === 'POST') {
     return readBody(req, 1000, body => {
       const auth = req.headers['authorization'] || '';
-      if (ADMIN_TOKEN && auth.replace('Bearer ', '') !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
+      if (ADMIN_TOKEN && auth.replace('Bearer ', '').trim() !== ADMIN_TOKEN) return json(res, 401, { error: 'Unauthorized' });
       try {
         const { ip: targetIp } = JSON.parse(body);
-        if (targetIp) bans.set(targetIp, Date.now() + 86400000); // Ban for 24h
+        if (targetIp) bans.set(targetIp, Date.now() + 86400000); // 24 Hours
         res.writeHead(204); res.end();
-      } catch { res.writeHead(400); res.end(); }
+      } catch { json(res, 400, { error: 'Bad request' }); }
+    });
+  }
+
+  // --- BLOCK / UNBLOCK ENDPOINT FOR DMs ---
+  if (url.pathname === '/dm/block' && req.method === 'POST') {
+    return readBody(req, 1000, body => {
+      try {
+        const m = JSON.parse(body), me = iidOf(m.dk), target = String(m.target || '');
+        if (!me || !okIid(target)) return json(res, 400, { error: 'Bad request' });
+        let set = dmBlocks.get(me);
+        if (!set) { set = new Set(); dmBlocks.set(me, set); }
+        if (m.block) set.add(target); else set.delete(target);
+        json(res, 200, { ok: true, blocked: m.block });
+      } catch { json(res, 400, { error: 'Bad request' }); }
     });
   }
 
@@ -207,7 +240,7 @@ http.createServer((req, res) => {
         const { msgId } = JSON.parse(body);
         const msg = sent.get(msgId);
         if (!msg || msg.userId !== user.id) return json(res, 403, { error: 'Unauthorized' });
-        
+
         msg.text = '[Image deleted by user]'; msg.isImage = false; msg.deleted = true;
 
         const r = rooms.get(msg.room);
@@ -220,10 +253,9 @@ http.createServer((req, res) => {
         const dmMsg = dmLog.get(msgId);
         if (dmMsg) {
           dmMsg.text = '[Image deleted by user]'; dmMsg.isImage = false; dmMsg.deleted = true;
-          const targets = liveByIid(dmMsg.to === iidOf(user.id) ? dmMsg.from : dmMsg.to);
           const delEvent = `data: ${JSON.stringify({ dmdel: msgId })}\n\n`;
           liveByIid(dmMsg.from).forEach(c => c.write(delEvent));
-          targets.forEach(c => c.write(delEvent));
+          liveByIid(dmMsg.to).forEach(c => c.write(delEvent));
         }
 
         res.writeHead(204); res.end();
@@ -244,12 +276,12 @@ http.createServer((req, res) => {
     const user = getSessionUser(req);
     const finalNick = user ? user.name : nick;
     if (!okRoom(name) || !finalNick || (conns.get(ip) || 0) >= 5 || closed.has(name)) { res.writeHead(400); return res.end(); }
-    
+
     conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = finalNick; res.reg = !!user;
     res.uid = user ? user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
     res.iid = iidOf(url.searchParams.get('dk'));
-    
+
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write(`data: ${JSON.stringify({ history: room(name).history, you: { id: res.cid, iid: res.iid, reg: res.reg, uid: res.uid } })}\n\n`);
     room(name).clients.add(res);
@@ -283,7 +315,7 @@ http.createServer((req, res) => {
     });
   }
 
-  // --- DMs ---
+  // --- DMs with Block Check ---
   if (url.pathname === '/dm' && req.method === 'POST') {
     return readBody(req, 2000000, body => {
       try {
@@ -293,6 +325,12 @@ http.createServer((req, res) => {
 
         let text = m.isImage ? String(m.text || '') : clean(m.text, 500);
         if (!from || !okIid(to) || to === from || !text) return json(res, 400, { error: 'bad request' });
+
+        // Check block
+        if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) {
+          return json(res, 403, { error: 'User blocked you' });
+        }
+
         const mine = liveByIid(from);
         if (!mine.length) return json(res, 403, { error: 'not online' });
         const targets = liveByIid(to);
@@ -308,7 +346,7 @@ http.createServer((req, res) => {
         pair.t = now;
         const id = crypto.randomUUID().slice(0, 8);
         dmLog.set(id, { id, ip, from, to, userId: user ? user.id : '', text, isImage: !!m.isImage, t: now });
-        sent.set(id, { userId: user ? user.id : '', room: '', text, isImage: !!m.isImage, t: now });
+        sent.set(id, { userId: user ? user.id : '', room: '', text, isImage: !!m.isImage, t: now, ip });
 
         const data = `data: ${JSON.stringify({ dm: { id, from, userId: user ? user.id : '', nick: mine[0].nick, text, isImage: !!m.isImage, t: now, request } })}\n\n`;
         liveByIid(from).forEach(c => c.write(data));
@@ -325,7 +363,7 @@ http.createServer((req, res) => {
         const pair = okIid(other) && me ? dmPairs.get([me, other].sort().join(':')) : null;
         if (pair && pair.to === me) pair.accepted = true;
         res.writeHead(204); res.end();
-      } catch { json(res, 400, { error: 'bad request' }); }
+      } catch { json(res, 400); res.end(); }
     });
   }
 
