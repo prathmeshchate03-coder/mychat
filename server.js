@@ -98,7 +98,6 @@ http.createServer((req, res) => {
     return res.end(content);
   }
 
-  // --- Registration with Unique Email & Unique Username check ---
   if (url.pathname === '/auth/register' && req.method === 'POST') {
     return readBody(req, 2000, body => {
       try {
@@ -114,7 +113,6 @@ http.createServer((req, res) => {
           return json(res, 400, { error: 'Email already registered' });
         }
 
-        // Check if username is already taken by anyone else
         for (const user of registeredUsers.values()) {
           if (user.name.toLowerCase() === cleanName.toLowerCase()) {
             return json(res, 400, { error: 'Username already taken. Please choose another.' });
@@ -153,7 +151,6 @@ http.createServer((req, res) => {
         const inputStr = clean(email, 50).toLowerCase();
         let user = registeredUsers.get(inputStr);
 
-        // Allow login using Username as well as Email
         if (!user) {
           for (const u of registeredUsers.values()) {
             if (u.name.toLowerCase() === inputStr) { user = u; break; }
@@ -383,7 +380,7 @@ http.createServer((req, res) => {
         let pair = dmPairs.get(key), request = false;
         if (!pair) { pair = { from, to, accepted: false, t: now }; dmPairs.set(key, pair); request = true; }
         else if (!pair.accepted) {
-          if (pair.from === from) return json(res, 409, {, error: 'pending' });
+          if (pair.from === from) return json(res, 409, { error: 'pending' });
           pair.accepted = true;
         }
         pair.t = now;
