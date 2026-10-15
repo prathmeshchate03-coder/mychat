@@ -1,0 +1,377 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>JenChat - Chat rooms</title><meta name="robots" content="noindex,follow"><link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"></head><body>
+<div id="gate"><a class="brand" href="/" style="justify-content:center"><img src="/logo.svg" alt="">Jen<span>Chat</span></a>
+<p>Free guest chat. No sign-up.</p><input type="text" id="nick" maxlength="20" placeholder="Pick a nickname" aria-label="Nickname"><br><br>
+<label><input type="checkbox" id="age"> I am 18 or older and will be respectful</label><br><br>
+<button id="go">Enter chat</button><p id="gateauth" style="font-size:14px" hidden>Have an account? <a id="gl1" role="button" tabindex="0">Log in</a> or <a id="gl2" role="button" tabindex="0">sign up</a> to send pictures.</p><p style="color:var(--mut);font-size:13px">Never share personal information with strangers.</p></div>
+<div id="app" hidden><aside id="side"><a class="brand" href="/" style="font-size:18px"><img src="/logo.svg" alt="" style="width:28px;height:28px">Jen<span>Chat</span></a>
+<div id="acct" hidden></div>
+<input type="text" id="q" placeholder="Search rooms" aria-label="Search rooms"><div id="list"></div>
+<b>Topics</b><div class="chips" id="chips"></div>
+<input type="text" id="newroom" placeholder="Join or create room" maxlength="30"><button id="joinbtn">Join</button>
+<button id="priv" class="ghost">Create private room</button></aside>
+<div id="main"><div id="head"><button id="menu" class="ghost" aria-label="Rooms">Rooms</button><b id="rname"></b><button id="dmbtn" class="ghost" aria-expanded="false" aria-controls="dms">Messages<span id="dmbadge" hidden></span></button><button id="cnt" class="ghost" aria-expanded="false" aria-controls="users" hidden></button></div>
+<div id="users" hidden></div>
+<div id="dms" hidden></div>
+<div id="msgs" aria-live="polite"></div>
+<div id="typing" aria-live="polite"></div>
+<div id="picprev" hidden></div>
+<div id="emojis" hidden></div>
+<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><button id="pic" class="ghost" aria-label="Send a picture">&#128247;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<div id="lightbox" hidden role="dialog" aria-label="Picture"><img alt=""></div>
+<input type="file" id="picfile" accept="image/*" hidden><input type="file" id="bgfile" accept="image/*" hidden>
+<div id="bgm" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="bgttl"><div class="box">
+<div class="dmhead"><b id="bgttl">Chat background</b><button type="button" id="bgx" class="ghost sm">Close</button></div>
+<div id="bgsw" class="swatches"></div>
+<div class="authbody"><button type="button" id="bgup" class="ghost">Choose a photo</button><button type="button" id="bgrm" class="ghost">Remove background</button>
+<p class="mut small">Photos need a confirmed account. A photo background is stored for 7 days.</p><p id="bgmsg" role="alert"></p></div></div></div>
+<div id="auth" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="authttl"><div class="box">
+<div class="dmhead"><b id="authttl">Your account</b><button type="button" id="authx" class="ghost sm">Close</button></div>
+<div class="authbody">
+<div class="tabs"><button type="button" id="tabin" class="ghost sm">Log in</button><button type="button" id="tabup" class="ghost sm">Sign up</button></div>
+<form id="fin"><input type="text" id="lg" placeholder="Username or email" autocomplete="username" maxlength="254" required aria-label="Username or email"><input type="password" id="lp" placeholder="Password" autocomplete="current-password" maxlength="72" required aria-label="Password"><button>Log in</button>
+<p class="links"><a id="forgot" role="button" tabindex="0">Forgot password?</a> <button type="button" id="resend" class="ghost sm" hidden>Send the email link again</button></p></form>
+<form id="fup" hidden><input type="text" id="sn" placeholder="Username (3-20 letters, numbers, _)" autocomplete="username" maxlength="20" required aria-label="Username"><input type="email" id="se" placeholder="Email" autocomplete="email" maxlength="254" required aria-label="Email"><input type="password" id="sp" placeholder="Password (8 or more characters)" autocomplete="new-password" minlength="8" maxlength="72" required aria-label="Password">
+<label class="small"><input type="checkbox" id="sa"> I am 18 or older and agree to the <a href="/legal#terms" target="_blank" rel="noopener">terms</a></label><button>Create account</button>
+<p class="mut small">We email you a link to confirm your address. Only confirmed accounts can send pictures.</p></form>
+<form id="ffg" hidden><input type="email" id="fe" placeholder="Your email" autocomplete="email" maxlength="254" required aria-label="Email"><button>Send reset link</button><p class="links"><a id="fback" role="button" tabindex="0">Back to log in</a></p></form>
+<p id="authmsg" role="alert"></p>
+</div></div></div>
+<script>
+const $=id=>document.getElementById(id);
+let nick=localStorage.nick,room,es,otok='',me={id:'',owner:false},users=[],lastTyping=0;
+let acct=null,authOn=false;   // acct = {name,uid} while logged in; authOn = the site has accounts switched on
+const typers=new Map();
+// uid: a random id kept in this browser. It lets people block someone even if the nickname changes. Accounts use their own id.
+let uid=localStorage.uid;if(!uid){uid=[...crypto.getRandomValues(new Uint8Array(8))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.uid=uid}
+const guestUid=uid;
+let blocked={};try{blocked=JSON.parse(localStorage.blocked||'{}')||{}}catch{}
+const saveBlocked=()=>{try{localStorage.blocked=JSON.stringify(blocked)}catch{}};
+// dk: a secret kept only in this browser. The server turns it into a public id (iid) that proves who you are for private messages.
+let dk=localStorage.dk;if(!/^[a-f0-9]{32}$/.test(dk||'')){dk=[...crypto.getRandomValues(new Uint8Array(16))].map(x=>x.toString(16).padStart(2,'0')).join('');localStorage.dk=dk}
+let dmBlocked={};try{dmBlocked=JSON.parse(localStorage.dmBlocked||'{}')||{}}catch{}
+const slug=s=>s.toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30);
+function el(tag,txt,cls){const e=document.createElement(tag);if(txt!=null&&txt!=='')e.textContent=txt;if(cls)e.className=cls;return e}
+function tick(){const v=el('span','✓','vb');v.title='Verified account';v.setAttribute('aria-label','verified account');return v}
+$('nick').value=nick||'Guest'+Math.floor(Math.random()*9000+1000);
+['music','gaming','anime','movies','news','english','food','friends'].forEach(t=>{const b=document.createElement('button');b.textContent=t;b.onclick=()=>join(t);$('chips').append(b)});
+function start(){$('gate').hidden=true;$('app').hidden=false;join(location.hash.slice(1)||'lobby');loadRooms();setInterval(loadRooms,5000)}
+$('go').onclick=async()=>{if(!$('age').checked)return alert('Please confirm you are 18 or older');
+ const n=$('nick').value.trim().slice(0,20)||'Guest';
+ try{const j=await (await fetch('/auth/name?n='+encodeURIComponent(n))).json();if(j.taken)return alert('That name belongs to a registered account. Pick another name'+(authOn?', or log in.':'.'))}catch{}
+ nick=n;localStorage.nick=nick;start()};
+
+// ---- accounts: log in, sign up, reset password ----
+const AERR={bad_login:'Wrong username/email or password.',locked:'Too many wrong tries. Wait 15 minutes.',rate:'Too many tries. Please wait a while.',banned:'This account is banned.',
+ bad_email:'That email address does not look right.',bad_name:'Username: 3 to 20 letters, numbers or _, starting with a letter. Some names are reserved.',bad_password:'Password must be 8 to 72 characters.',
+ no_age:'Please confirm you are 18 or older.',email_taken:'That email already has an account.',name_taken:'That username is taken.',mail_failed:'We could not send the email. Please try again later.',
+ mail_budget:'We cannot send more emails today. Please try again tomorrow.',unavailable:'Accounts are not switched on right now.',busy:'The server is busy. Try again in a moment.'};
+async function refreshMe(){try{const j=await (await fetch('/auth/me')).json();authOn=!!j.enabled;acct=j.user||null}catch{authOn=false;acct=null}
+ uid=acct?acct.uid:guestUid;if(acct)nick=acct.name;renderAcct()}
+function renderAcct(){const a=$('acct');a.innerHTML='';a.hidden=!authOn&&!acct;$('gateauth').hidden=!authOn||!!acct;if(a.hidden)return;
+ if(acct){a.append(el('span',acct.name,'who'),tick());const b=el('button','Log out','ghost sm');b.onclick=logout;a.append(b)}
+ else{const b=el('button','Log in / Sign up','ghost sm');b.onclick=()=>openAuth('in');a.append(b)}}
+async function logout(){try{await fetch('/auth/logout',{method:'POST',body:'{}'})}catch{}location.reload()}
+function authMsg(t,good){const m=$('authmsg');m.textContent=t;m.className=good?'good':'bad'}
+function showTab(t){['in','up','fg'].forEach(k=>{$('f'+k).hidden=k!==t});$('tabin').classList.toggle('on',t==='in');$('tabup').classList.toggle('on',t==='up');$('resend').hidden=true;$('authmsg').textContent='';
+ $('authttl').textContent=t==='fg'?'Reset password':'Your account'}
+function openAuth(tab,msg){closePanels();$('auth').hidden=false;showTab(tab||'in');if(msg)authMsg(msg,false);
+ const f={in:'lg',up:'sn',fg:'fe'}[tab||'in'];setTimeout(()=>$(f).focus(),30)}
+function closeAuth(){$('auth').hidden=true}
+async function authPost(path,body){const r=await fetch(path,{method:'POST',body:JSON.stringify(body)});let j={};try{j=await r.json()}catch{}return{ok:r.ok&&!!j.ok,status:r.status,j}}
+async function afterLogin(){closeAuth();await refreshMe();if(!$('gate').hidden)start();else join(room||'lobby')}
+$('tabin').onclick=()=>showTab('in');$('tabup').onclick=()=>showTab('up');$('authx').onclick=closeAuth;
+$('auth').onclick=e=>{if(e.target===$('auth'))closeAuth()};
+$('gl1').onclick=()=>openAuth('in');$('gl2').onclick=()=>openAuth('up');
+$('forgot').onclick=()=>showTab('fg');$('fback').onclick=()=>showTab('in');
+$('fin').onsubmit=async e=>{e.preventDefault();authMsg('Logging in...',true);$('resend').hidden=true;
+ const r=await authPost('/auth/login',{login:$('lg').value.trim(),password:$('lp').value}).catch(()=>null);
+ if(!r)return authMsg('Network problem. Try again.');
+ if(r.ok)return afterLogin();
+ if(r.j.error==='unverified'){authMsg('Your email is not confirmed yet. Open the link we sent you, or send it again.');$('resend').hidden=false;return}
+ authMsg(AERR[r.j.error]||'Something went wrong. Try again.')};
+$('resend').onclick=async()=>{authMsg('Sending...',true);
+ const r=await authPost('/auth/resend',{login:$('lg').value.trim(),password:$('lp').value}).catch(()=>null);
+ if(!r)return authMsg('Network problem. Try again.');
+ if(r.ok)return authMsg(r.j.already?'Your email is already confirmed. Log in again.':'We sent a new link. Check your inbox and the spam folder.',true);
+ authMsg(AERR[r.j.error]||'Something went wrong. Try again.')};
+$('fup').onsubmit=async e=>{e.preventDefault();
+ const b={name:$('sn').value.trim(),email:$('se').value.trim(),password:$('sp').value,age:$('sa').checked};
+ if(!b.age)return authMsg('Please confirm you are 18 or older.');
+ authMsg('Creating your account...',true);
+ const r=await authPost('/auth/register',b).catch(()=>null);
+ if(!r)return authMsg('Network problem. Try again.');
+ if(r.ok){showTab('in');$('lg').value=b.name;$('lp').value='';authMsg('Almost done. We sent a link to '+b.email+'. Open it to confirm your email (check the spam folder too), then log in here.',true);return}
+ authMsg(AERR[r.j.error]||'Something went wrong. Try again.')};
+$('ffg').onsubmit=async e=>{e.preventDefault();authMsg('Sending...',true);
+ const r=await authPost('/auth/forgot',{email:$('fe').value.trim()}).catch(()=>null);
+ if(!r)return authMsg('Network problem. Try again.');
+ authMsg(r.ok?'If that email has an account, we sent a link to choose a new password.':(AERR[r.j.error]||'Something went wrong. Try again.'),r.ok)};
+
+function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';
+ users=[];me={id:'',owner:false};applyBg($('msgs'),null);typers.clear();showTyping();$('cnt').hidden=true;closePanels();
+ if(pending&&pending.ctx==='room'&&!pending.busy)clearPending();
+ otok=localStorage.getItem('otok:'+name)||'';
+ if(es)es.close();
+ es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick)+'&uid='+uid+'&dk='+dk+(otok?'&otok='+otok:''));
+ es.onmessage=e=>{const d=JSON.parse(e.data);
+  if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);applyBg($('msgs'),d.bg);renderUsers();
+   if(Object.keys(dmBlocked).length)dmCall('/dm/block',{add:Object.keys(dmBlocked)}).catch(()=>{})}   // keep the server's block list in step after restarts
+  else if(d.typing)onTyping(d);
+  else if(d.dm)onDm(d.dm);
+  else if('roombg' in d)applyBg($('msgs'),d.roombg);
+  else if(d.dmbg){thread(d.dmbg.with).bg=d.dmbg.bg;renderDms()}
+  else if(d.imgdel)markDeleted(d.imgdel);
+  else if(d.dmdel)markDeleted(d.dmdel.img);
+  else add(d)};
+ es.onerror=()=>{if(es.readyState===2)notice('Cannot join this room. You may be banned or removed, the room may be closed, or you have too many tabs open.')};
+ $('side').classList.remove('open')}
+function notice(t){const d=el('div',t,'sys');$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
+
+function add(m){const box=$('msgs');
+ if(m.system){const d=el('div',m.text,'sys');
+  if(m.users){users=m.users;renderUsers()}
+  if(m.text)box.append(d);box.scrollTop=box.scrollHeight;return}
+ if(m.uid&&blocked[m.uid])return;
+ const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
+ const b=el('b',m.nick);if(m.v)b.append(tick());d.append(b);
+ if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
+ const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
+ rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
+ d.append(rp);
+ if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
+ if(m.text)d.append(el('div',m.text));
+ box.append(d);box.scrollTop=box.scrollHeight}
+
+// ---- pictures: choose, shrink, preview, send, view, delete ----
+const isImgId=s=>/^[a-f0-9]{32}$/.test(String(s||''));
+const shown=new Set();   // pictures from other people that this person already opened
+const PIC_MAX=290*1024,PICERR={type:'That file is not a picture.',big:'That picture is too big to send.',small:'That picture is too small.',read:'Could not read that picture. Try a JPG or PNG.'};
+function imgBox(id,mine,who){const box=el('div','','imgbox');box.dataset.img=id;
+ const fill=()=>{shown.add(id);box.innerHTML='';
+  const im=document.createElement('img');im.alt='Picture from '+who;im.decoding='async';im.referrerPolicy='no-referrer';im.src='/img/'+id;
+  im.onclick=()=>zoom(im.src);im.onerror=()=>{box.innerHTML='';box.append(el('span','Picture not available any more','imggone'))};
+  box.append(im);
+  if(mine){const del=el('a','delete picture','imgdel');del.tabIndex=0;del.setAttribute('role','button');del.onclick=()=>deletePicture(id);del.onkeydown=e=>{if(e.key==='Enter')deletePicture(id)};box.append(del)}};
+ if(mine||shown.has(id))fill();
+ else{const b=el('button','Picture from '+who+'. Tap to view','ghost imgbtn');b.onclick=fill;box.append(b)}
+ return box}
+function zoom(src){const l=$('lightbox');l.querySelector('img').src=src;l.hidden=false}
+$('lightbox').onclick=()=>{$('lightbox').hidden=true;$('lightbox').querySelector('img').removeAttribute('src')};
+async function deletePicture(id){
+ if(!confirm('Delete this picture for everyone? Anyone who already saved a copy will still have it.'))return;
+ const say=t=>$('dms').hidden?notice(t):dmNote(t);
+ try{const r=await fetch('/img/delete',{method:'POST',body:JSON.stringify({id})});
+  if(r.status===204||r.status===404)return markDeleted(id);
+  if(r.status===401)return openAuth('in','Log in again to delete this picture.');
+  say(r.status===429?'Slow down a little.':'Could not delete the picture. Try again.')}
+ catch{say('Network problem. Try again.')}}
+function markDeleted(id){
+ document.querySelectorAll('.imgbox').forEach(b=>{if(b.dataset.img===id){b.innerHTML='';b.className='imgbox gone';b.append(el('span','Picture deleted','imggone'))}});
+ shown.delete(id);
+ threads.forEach(t=>t.msgs.forEach(m=>{if(m.img===id){m.img='';m.gone=true}}))}
+const toBlob=(c,q)=>new Promise(ok=>c.toBlob(ok,'image/jpeg',q));
+// Re-draws the picture as a JPEG of at most about 290 KB. This also removes camera and location data.
+async function shrink(file){
+ if(!/^image\//.test(file.type))throw 'type';
+ if(file.size>30*1024*1024)throw 'big';
+ let src,w0,h0;
+ try{src=await createImageBitmap(file);w0=src.width;h0=src.height}
+ catch{try{src=await new Promise((ok,no)=>{const i=new Image(),u=URL.createObjectURL(file);i.onload=()=>{URL.revokeObjectURL(u);ok(i)};i.onerror=()=>{URL.revokeObjectURL(u);no()};i.src=u});w0=src.naturalWidth;h0=src.naturalHeight}catch{throw 'read'}}
+ if(!w0||!h0)throw 'read';
+ let max=1280;
+ for(let round=0;round<6;round++){
+  const s=Math.min(1,max/Math.max(w0,h0)),w=Math.max(1,Math.round(w0*s)),h=Math.max(1,Math.round(h0*s));
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(src,0,0,w,h);
+  for(const q of [0.82,0.68,0.55,0.42]){const b=await toBlob(c,q);if(!b)throw 'read';if(b.size<=PIC_MAX){if(b.size<1100)throw 'small';return b}}
+  max=Math.round(max*0.75)}
+ throw 'big'}
+let pending=null,picCtx='room';   // pending = {blob,url,ctx:'room' or a DM id,busy}
+function clearPending(){if(pending){URL.revokeObjectURL(pending.url);pending=null}showPending()}
+function pickPicture(ctx){
+ const say=t=>ctx==='room'?notice(t):dmNote(t);
+ if(!authOn)return say('Picture sharing is not switched on yet.');
+ if(!acct)return openAuth('in','Log in or sign up to send pictures.');
+ picCtx=ctx;$('picfile').value='';$('picfile').click()}
+$('picfile').onchange=async()=>{const f=$('picfile').files[0];if(!f)return;const ctx=picCtx;
+ try{const blob=await shrink(f);clearPending();pending={blob,url:URL.createObjectURL(blob),ctx,busy:false};showPending()}
+ catch(e){const t=PICERR[e]||PICERR.read;ctx==='room'?notice(t):dmNote(t)}};
+$('pic').onclick=()=>pickPicture('room');
+function pendingBar(ctx){const p=pending;if(!p||p.ctx!==ctx)return null;
+ const bar=el('div','','picprev'),im=document.createElement('img');im.src=p.url;im.alt='Picture to send';
+ const s=el('button','Send picture','sm'),c=el('button','Cancel','ghost sm');s.disabled=c.disabled=p.busy;s.onclick=sendPicture;c.onclick=clearPending;
+ bar.append(im,el('span',p.busy?'Sending...':'Add a caption if you like, then send ('+Math.round(p.blob.size/1024)+' KB).','picinfo'),s,c);return bar}
+function showPending(){const r=$('picprev');r.innerHTML='';const b=pendingBar('room');if(b){r.append(b);r.hidden=false}else r.hidden=true;renderDms()}
+async function sendPicture(){
+ const p=pending;if(!p||p.busy)return;p.busy=true;showPending();
+ const say=t=>p.ctx==='room'?notice(t):dmNote(t);let id='';
+ try{
+  const r=await fetch('/img',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:p.blob}),j=await r.json().catch(()=>({}));
+  if(!r.ok){p.busy=false;showPending();
+   if(r.status===401)return openAuth('in','Please log in again to send pictures.');
+   return say(r.status===429?'Too many pictures. Wait a minute and try again.':r.status===413?'That picture is too big.':j.error==='full'?'Picture storage is full right now. Try again later.':r.status===403?'You cannot send pictures right now.':'Could not upload the picture. Try again.')}
+  id=j.id;
+  if(p.ctx==='room'){const text=$('text').value.trim(),r2=await fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text,img:id})});
+   if(!r2.ok)throw r2.status;$('text').value=''}
+  else{const t=thread(p.ctx),inp=$('dmtext'),text=inp?inp.value.trim():'',r2=await dmCall('/dm',{to:p.ctx,text,img:id});
+   if(!r2.ok)throw r2.status;const j2=await r2.json().catch(()=>({}));
+   t.msgs.push({id:j2.id||'',mine:true,text,img:id,t:j2.t||Date.now()});t.request=false;if(inp)inp.value=''}
+  clearPending()
+ }catch(st){
+  if(id)fetch('/img/delete',{method:'POST',body:JSON.stringify({id})}).catch(()=>{});   // it never reached anyone, so remove the upload again
+  p.busy=false;showPending();
+  say(st===429?'Slow down a little.':st===404?'That person is not online right now.':st===409?'Wait for them to accept your first message.':st===403?'You cannot send here (banned, removed or room closed).':'The picture could not be sent. Try again.')}}
+
+
+// ---- custom background (room owner for a private room, either person in a private message) ----
+let bgCtx='room';
+function applyBg(e,bg){if(!e)return;e.className=e.className.replace(/\s*\bbg-c\d\b/g,'');e.style.background='';
+ if(bg&&bg.k&&/^c[1-8]$/.test(bg.k))e.classList.add('bg-'+bg.k);
+ else if(bg&&isImgId(bg.img))e.style.background='linear-gradient(#000a,#000a),url(/img/'+bg.img+') center/cover no-repeat'}
+const bgSay=t=>{$('bgmsg').textContent=t};
+function openBg(ctx){bgCtx=ctx;bgSay('');$('bgttl').textContent=ctx==='room'?'Room background (everyone sees it)':'Chat background (both of you see it)';$('bgm').hidden=false}
+$('bgx').onclick=()=>{$('bgm').hidden=true};
+for(let i=1;i<=8;i++){const b=document.createElement('button');b.type='button';b.className='sw bg-c'+i;b.setAttribute('aria-label','Colour '+i);b.onclick=()=>setBg({k:'c'+i});$('bgsw').append(b)}
+$('bgrm').onclick=()=>setBg(null);
+async function setBg(bg){
+ const isRoom=bgCtx==='room';
+ const r=await (isRoom?fetch('/bg',{method:'POST',body:JSON.stringify({room,otok,bg})}):dmCall('/dm/bg',{to:bgCtx,bg})).catch(()=>null);
+ if(!r){bgSay('Network problem. Try again.');return false}
+ if(r.status===204){$('bgm').hidden=true;return true}
+ bgSay(r.status===409?'Wait until they accept your first message.':r.status===403?(isRoom?'Only the room owner can change this.':'You need to log in to use a photo.'):r.status===429?'Slow down a little.':'Could not change the background.');return false}
+$('bgup').onclick=()=>{
+ if(!authOn)return bgSay('Photos are not switched on yet.');
+ if(!acct){$('bgm').hidden=true;return openAuth('in','Log in or sign up to use your own photo.')}
+ $('bgfile').value='';$('bgfile').click()};
+$('bgfile').onchange=async()=>{const f=$('bgfile').files[0];if(!f)return;bgSay('Uploading...');
+ try{const blob=await shrink(f),r=await fetch('/img',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob}),j=await r.json().catch(()=>({}));
+  if(!r.ok)return bgSay(r.status===401?'Please log in again.':r.status===429?'Too many pictures. Wait a minute.':j.error==='full'?'Picture storage is full right now.':'Could not upload the picture.');
+  if(!(await setBg({img:j.id})))fetch('/img/delete',{method:'POST',body:JSON.stringify({id:j.id})}).catch(()=>{})}
+ catch(e){bgSay(PICERR[e]||PICERR.read)}};
+
+// ---- users panel, block, kick ----
+function renderUsers(){
+ const c=$('cnt');c.hidden=!users.length;c.textContent=users.length+' online';
+ const p=$('users');p.innerHTML='';
+ if(me.owner){const bb=el('button','Change room background','ghost sm');bb.onclick=()=>openBg('room');p.append(bb)}
+ users.forEach(u=>{const row=el('div','','urow'),nm=el('span',u.nick+(u.id===me.id?' (you)':''),'un');if(u.v)nm.append(tick());row.append(nm);
+  if(u.owner)row.append(el('span','owner','badge'));
+  if(u.id!==me.id){
+   if(u.iid&&me.iid&&u.iid!==me.iid&&!dmBlocked[u.iid]){const mb=el('button','Message','ghost sm');mb.onclick=()=>openDm(u.iid,u.nick,u.v);row.append(mb)}
+   if(u.uid&&u.uid!==uid){const bb=el('button',blocked[u.uid]?'Unblock':'Block','ghost sm');bb.onclick=()=>blocked[u.uid]?unblock(u.uid):block(u.uid,u.nick);row.append(bb)}
+   if(me.owner&&!u.owner){const kb=el('button','Kick','ghost sm');kb.onclick=()=>kickUser(u);row.append(kb)}}
+  p.append(row)});
+ const ids=Object.keys(blocked);
+ if(ids.length){p.append(el('div','Blocked','uh'));
+  ids.forEach(id=>{const row=el('div','','urow');row.append(el('span',blocked[id],'un'));const ub=el('button','Unblock','ghost sm');ub.onclick=()=>unblock(id);row.append(ub);p.append(row)})}}
+function block(id,name){if(Object.keys(blocked).length>=200)return notice('Block list is full.');
+ blocked[id]=name;saveBlocked();
+ document.querySelectorAll('#msgs .m').forEach(m=>{if(m.dataset.uid===id)m.remove()});
+ notice('Blocked '+name+'. You can undo it from the online list.');renderUsers()}
+function unblock(id){delete blocked[id];saveBlocked();renderUsers();notice('Unblocked. Their new messages will show again.')}
+function kickUser(u){if(!confirm('Remove '+u.nick+' from this room?'))return;
+ fetch('/kick',{method:'POST',body:JSON.stringify({room,otok,cid:u.id})}).then(r=>{if(r.status===204)notice(u.nick+' was removed.');else notice('Could not remove '+u.nick+'.')})}
+function closePanels(){$('users').hidden=true;$('emojis').hidden=true;$('dms').hidden=true;
+ $('cnt').setAttribute('aria-expanded','false');$('emo').setAttribute('aria-expanded','false');$('dmbtn').setAttribute('aria-expanded','false')}
+$('cnt').onclick=()=>{const open=$('users').hidden;closePanels();$('users').hidden=!open;$('cnt').setAttribute('aria-expanded',String(open))};
+
+// ---- private messages (1 to 1, text and pictures) ----
+// A first message is only a request: the other person must reply or press Accept before you can send more.
+// Conversations live in this page only, so they are gone when you reload. Both people must be online.
+const threads=new Map();let curThread='';
+const saveDmBlocked=()=>{try{localStorage.dmBlocked=JSON.stringify(dmBlocked)}catch{}};
+const dmCall=(path,body)=>fetch(path,{method:'POST',body:JSON.stringify({dk,...body})});
+function thread(iid,name,v){let t=threads.get(iid);if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false,v:false};threads.set(iid,t)}if(name)t.nick=name;if(v!==undefined)t.v=!!v;return t}
+function updateBadge(){let n=0;threads.forEach(t=>n+=t.unread);const b=$('dmbadge');b.hidden=!n;b.textContent=n}
+function onDm(m){if(dmBlocked[m.from])return;const t=thread(m.from,m.nick,m.v),first=!t.msgs.length;
+ t.msgs.push({id:m.id,mine:false,text:m.text,img:isImgId(m.img)?m.img:'',t:m.t});if(first&&m.request)t.request=true;if(m.bg)t.bg=m.bg;
+ if($('dms').hidden||curThread!==m.from){t.unread++;if(first)notice('Private message from '+t.nick+'. Open Messages to read it.')}
+ updateBadge();renderDms()}
+function showDms(iid){closePanels();$('dms').hidden=false;$('dmbtn').setAttribute('aria-expanded','true');curThread=iid||'';
+ if(iid){thread(iid).unread=0;updateBadge()}renderDms();const i=$('dmtext');if(i&&!i.disabled)i.focus()}
+function openDm(iid,name,v){thread(iid,name,v);showDms(iid)}
+$('dmbtn').onclick=()=>{if($('dms').hidden)showDms('');else closePanels()};
+const preview=m=>m.img||m.gone?'Picture'+(m.text?': '+m.text:''):m.text;
+function renderDms(){const p=$('dms');if(p.hidden)return;
+ const old=$('dmtext'),keep=old?old.value:'',focused=old&&document.activeElement===old;p.innerHTML='';
+ if(!curThread){const h=el('div','','dmhead');h.append(el('b','Messages'));const x=el('button','Close','ghost sm');x.onclick=closePanels;h.append(x);
+  const body=el('div','','dmbody');
+  const list=[...threads.values()].filter(t=>t.msgs.length).sort((a,b)=>b.msgs[b.msgs.length-1].t-a.msgs[a.msgs.length-1].t);
+  if(!list.length)body.append(el('p','No private messages yet. Open the online list and press Message next to someone.','mut'));
+  list.forEach(t=>{const last=t.msgs[t.msgs.length-1],row=el('div','','dmrow'),info=el('div','','dminfo'),nm=el('b',t.nick);if(t.v)nm.append(tick());
+   row.tabIndex=0;row.setAttribute('role','button');info.append(nm,el('span',(last.mine?'You: ':'')+preview(last),'dmlast'));row.append(info);
+   if(t.request)row.append(el('span','request','badge'));if(t.unread)row.append(el('span',String(t.unread),'dot'));
+   row.onclick=()=>showDms(t.iid);row.onkeydown=e=>{if(e.key==='Enter')showDms(t.iid)};body.append(row)});
+  const bl=Object.keys(dmBlocked);
+  if(bl.length){body.append(el('div','Blocked for messages','uh'));
+   bl.forEach(id=>{const row=el('div','','urow');row.append(el('span',dmBlocked[id],'un'));const ub=el('button','Unblock','ghost sm');
+    ub.onclick=()=>{delete dmBlocked[id];saveDmBlocked();dmCall('/dm/block',{remove:[id]});renderDms();renderUsers()};row.append(ub);body.append(row)})}
+  p.append(h,body);return}
+ const t=thread(curThread),h=el('div','','dmhead'),back=el('button','Back','ghost sm'),blk=el('button','Block','ghost sm'),title=el('b',t.nick);if(t.v)title.append(tick());
+ back.onclick=()=>{curThread='';renderDms()};blk.onclick=()=>blockDm(t);const bgb=el('button','Background','ghost sm');bgb.onclick=()=>openBg(t.iid);h.append(back,title,bgb,blk);
+ const body=el('div','','dmbody');body.id='dmmsgs';applyBg(body,t.bg);
+ if(!t.msgs.length)body.append(el('p','Say hello to '+t.nick+'. They have to accept your first message before you can send more.','mut'));
+ t.msgs.forEach(m=>{const d=el('div','','m'+(m.mine?' me':''));d.append(el('b',m.mine?'You':t.nick));
+  if(!m.mine){const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');rp.onclick=()=>{dmCall('/report',{id:m.id});rp.textContent='reported'};d.append(rp)}
+  if(isImgId(m.img))d.append(imgBox(m.img,m.mine,t.nick));else if(m.gone)d.append(el('div','Picture deleted','imggone'));
+  if(m.text)d.append(el('div',m.text));body.append(d)});
+ const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
+ if(t.request){const bar=el('div','','dmreq'),ac=el('button','Accept','sm');bar.append(el('span',t.nick+' wants to message you.'));
+  ac.onclick=()=>{t.request=false;dmCall('/dm/accept',{from:t.iid});renderDms()};bar.append(ac);body.append(bar)}
+ if(waiting)body.append(el('p','Waiting for '+t.nick+' to accept your message.','mut'));
+ const pb=pendingBar(curThread);if(pb)p.append(pb);
+ const f=el('div','','dmform'),at=el('button','📷','ghost'),inp=el('input'),sb=el('button','Send');
+ at.setAttribute('aria-label','Send a picture');at.id='dmpic';at.onclick=()=>pickPicture(t.iid);
+ inp.type='text';inp.id='dmtext';inp.maxLength=500;inp.placeholder='Private message';inp.autocomplete='off';inp.setAttribute('aria-label','Private message');inp.value=keep;
+ sb.onclick=()=>sendDm(t,inp);inp.onkeydown=e=>{if(e.key==='Enter')sendDm(t,inp)};
+ if(waiting){inp.disabled=true;sb.disabled=true;at.disabled=true}
+ f.append(at,inp,sb);p.insertBefore(h,p.firstChild);p.insertBefore(body,pb||null);p.append(f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
+function dmNote(text){const b=$('dmmsgs');if(b){b.append(el('p',text,'dmerr'));b.scrollTop=b.scrollHeight}else notice(text)}
+function sendDm(t,inp){if(pending&&pending.ctx===t.iid)return sendPicture();
+ const text=inp.value.trim();if(!text)return;inp.value='';
+ dmCall('/dm',{to:t.iid,text}).then(async r=>{
+  if(r.ok){const j=await r.json().catch(()=>({}));t.msgs.push({id:j.id||'',mine:true,text,t:j.t||Date.now()});t.request=false;renderDms();return}
+  inp.value=text;
+  dmNote(r.status===404?t.nick+' is not online right now.':r.status===409?'Wait for '+t.nick+' to accept your first message.':r.status===429?'Slow down a little.':'This message could not be sent.')
+ }).catch(()=>{inp.value=text;dmNote('Network problem. Try again.')})}
+function blockDm(t){if(Object.keys(dmBlocked).length>=200)return dmNote('Block list is full.');
+ if(!confirm('Block private messages from '+t.nick+'?'))return;
+ if(pending&&pending.ctx===t.iid&&!pending.busy)clearPending();
+ dmBlocked[t.iid]=t.nick;saveDmBlocked();dmCall('/dm/block',{add:[t.iid]});threads.delete(t.iid);curThread='';updateBadge();renderDms();renderUsers()}
+
+// ---- typing indicator ----
+function onTyping(d){if(d.uid===uid||(d.uid&&blocked[d.uid]))return;
+ clearTimeout(typers.get(d.nick));typers.set(d.nick,setTimeout(()=>{typers.delete(d.nick);showTyping()},3500));showTyping()}
+function showTyping(){const n=[...typers.keys()];
+ $('typing').textContent=!n.length?'':n.length===1?n[0]+' is typing...':n.length===2?n[0]+' and '+n[1]+' are typing...':'Several people are typing...'}
+$('text').oninput=()=>{const now=Date.now();
+ if($('text').value&&now-lastTyping>2500){lastTyping=now;fetch('/typing',{method:'POST',body:JSON.stringify({room,nick,uid})}).catch(()=>{})}};
+
+// ---- emoji ----
+'😀 😂 🤣 😊 😍 😘 😎 🤔 😅 😭 😡 😴 🙄 😉 🥳 😇 👍 👎 👏 🙏 💪 🔥 ❤️ 💔 ✨ 🎉 🎵 🎮 🍕 ☕ 🌙 ⭐'.split(' ').forEach(e=>{
+ const b=el('button',e,'ghost');b.setAttribute('aria-label','Insert '+e);
+ b.onclick=()=>{const t=$('text'),s=t.selectionStart??t.value.length,x=t.selectionEnd??s;
+  if(t.value.length-(x-s)+e.length>t.maxLength)return;
+  t.value=t.value.slice(0,s)+e+t.value.slice(x);t.focus();t.selectionStart=t.selectionEnd=s+e.length};
+ $('emojis').append(b)});
+$('emo').onclick=()=>{const open=$('emojis').hidden;closePanels();$('emojis').hidden=!open;$('emo').setAttribute('aria-expanded',String(open))};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('lightbox').hidden)$('lightbox').click();else if(!$('auth').hidden)closeAuth();else closePanels()}});
+
+function send(){if(pending&&pending.ctx==='room')return sendPicture();
+ const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned, removed or room closed).')})}
+$('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
+$('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
+$('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6)),name='p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
+ // secret that proves ownership of this private room; stays in this browser only
+ localStorage.setItem('otok:'+name,[...crypto.getRandomValues(new Uint8Array(12))].map(x=>x.toString(16).padStart(2,'0')).join(''));
+ join(name);prompt('Share this link to invite people. You are the owner and can remove people from the online list:',location.href)};
+$('menu').onclick=()=>$('side').classList.toggle('open');
+$('q').oninput=loadRooms;
+async function loadRooms(){try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';
+ if(!l.length){$('list').textContent='No active rooms yet. Start one.';return}
+ l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
+if(nick&&location.hash.length>1)$('gate').querySelector('p').textContent='Welcome back. Confirm to continue.';
+// A logged-in person has already confirmed they are 18 or older when signing up, so they go straight in.
+refreshMe().then(()=>{if(acct)start()});
+</script></body></html>
