@@ -103,3 +103,11 @@ input[type=password],input[type=email]{background:#26262c;border:1px solid var(-
 #authmsg{font-size:14px;min-height:20px}#authmsg.good{color:#4cd964}#authmsg.bad{color:#ff8a8a}
 .modal[hidden],#lightbox[hidden],#picprev[hidden]{display:none!important}
 @media(max-width:400px){#pic,#emo{padding:8px}}
+/* smaller picture thumbnails: tap to enlarge */
+.m{width:fit-content;max-width:min(80%,340px)}
+.imgbox img{max-width:min(100%,220px);max-height:170px;width:auto;height:auto;object-fit:cover}
+.dmbody .imgbox img{max-width:min(100%,170px);max-height:130px}
+.dmbody .m{max-width:90%}
+#picprev img{height:36px}
+#lightbox img{max-width:96vw;max-height:90dvh;object-fit:contain}
+@media(max-width:700px){.m{max-width:min(88%,300px)}}
