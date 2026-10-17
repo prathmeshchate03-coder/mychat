@@ -111,3 +111,26 @@ input[type=password],input[type=email]{background:#26262c;border:1px solid var(-
 #picprev img{height:36px}
 #lightbox img{max-width:96vw;max-height:90dvh;object-fit:contain}
 @media(max-width:700px){.m{max-width:min(88%,300px)}}
+/* custom backgrounds */
+.bg-c1{background:linear-gradient(160deg,#1b2a49,#0f1730)}.bg-c2{background:linear-gradient(160deg,#3b1f4a,#1a0f26)}
+.bg-c3{background:linear-gradient(160deg,#0f3d3a,#08201f)}.bg-c4{background:linear-gradient(160deg,#4a1f1f,#240f0f)}
+.bg-c5{background:linear-gradient(160deg,#3d3a0f,#1f1d08)}.bg-c6{background:linear-gradient(160deg,#0f2f4a,#1f4a3a)}
+.bg-c7{background:linear-gradient(160deg,#4a2f1f,#2a1a2f)}.bg-c8{background:#000}
+.swatches{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}
+.sw{height:48px;padding:0;border:2px solid var(--line);border-radius:10px;background-clip:padding-box}.sw:hover,.sw:focus-visible{border-color:var(--y)}
+#users>button{margin-bottom:6px}
+/* room tools */
+textarea{background:#26262c;border:1px solid var(--line);color:#eee;border-radius:10px;padding:10px;width:100%;font:inherit;resize:vertical}
+#pinbar{display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--card);border-bottom:1px solid var(--line);font-size:14px}
+#pinbar .pintxt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#pinbar b{color:var(--y)}
+.toprow{display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap}
+#aboutbody h3{margin:10px 0 0}#aboutbody p{margin:2px 0 8px;overflow-wrap:anywhere}
+.m a.pin,.m a[role=button]{cursor:pointer}
+/* my rooms, friends */
+#mine{margin:6px 0}#mine .room{margin-top:4px}.small{font-size:13px}
+.urow{flex-wrap:wrap}.dotstat{display:inline-block;width:9px;height:9px;border-radius:50%;background:#555}.dotstat.on{background:#4cd964}
+.dmreq .sm{flex:none}
+/* voice notes */
+#mic{padding:8px 12px;font-size:18px;line-height:1}.audbox{margin-top:4px}.audbox audio{display:block;width:100%;max-width:240px;height:36px}
+.recdot{color:#ff5a5a;animation:rec 1s infinite}@keyframes rec{50%{opacity:.25}}
+@media(max-width:400px){#mic{padding:8px}}@media(prefers-reduced-motion:reduce){.recdot{animation:none}}

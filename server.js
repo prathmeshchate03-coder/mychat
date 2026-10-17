@@ -3,6 +3,8 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+// Features that are built but switched off until you set the variable to 1 on the server (Render > Environment).
+const FEAT = { social: process.env.FEATURE_SOCIAL === '1', voice: process.env.FEATURE_VOICE === '1' };
 const rooms = new Map(), hits = new Map(), conns = new Map();
 const bans = new Map();       // ip -> { reason, t, until }  (until = 0 means permanent)
 const closed = new Map();     // room name -> { reason, t }
@@ -43,7 +45,7 @@ function liveByIid(iid) {
 
 function room(name) {
   // ownerTok: sha256 of the creator's secret (private rooms only). kicked: ip -> expiry time.
-  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', kicked: new Map() });
+  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', ownerAcct: '', kicked: new Map(), banned: new Map(), about: { topic: '', desc: '', rules: '' }, pin: null, bg: null });
   return rooms.get(name);
 }
 // Join/leave notice that also carries the current member list (no IPs, only public info).
@@ -51,6 +53,37 @@ function sys(name, text) {
   const r = room(name);
   broadcast(name, { system: true, text, count: r.clients.size,
     users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, v: !!c.acct })) });
+}
+// ---- private room settings: saved in the database for 30 days so an owner can come back to the same room ----
+const ownsRoom = (r, user, otok) => !!r && ((!!r.ownerTok && okTok(String(otok || '')) && sha(String(otok)) === r.ownerTok) || (!!user && !!r.ownerAcct && user.id === r.ownerAcct));
+const roomBanned = (r, ip, user) => r.banned.has('ip:' + ip) || (!!user && r.banned.has('a:' + user.id));
+const roomDirty = new Set(); let roomTimer = null;
+function saveRoom(name) {
+  if (!DB_URL || !name.startsWith('p-')) return;
+  roomDirty.add(name); if (!roomTimer) roomTimer = setTimeout(flushRooms, 3000);
+}
+async function flushRooms() {
+  clearTimeout(roomTimer); roomTimer = null;
+  if (!dbOn()) return;
+  for (const name of [...roomDirty]) {
+    roomDirty.delete(name);
+    const r = rooms.get(name); if (!r || !(r.ownerTok || r.ownerAcct)) continue;
+    try { await dbCmd(['SET', 'jc:room:' + name, JSON.stringify({ o: r.ownerTok, a: r.ownerAcct, about: r.about, bg: r.bg, pin: r.pin, banned: [...r.banned] }), 'EX', 30 * 86400]); }
+    catch (e) { console.error('ROOM SAVE', e.message); roomDirty.add(name); roomTimer = roomTimer || setTimeout(flushRooms, 30000); }
+  }
+}
+async function ensureRoom(name) {
+  if (rooms.has(name) || !name.startsWith('p-') || !dbOn()) return;
+  let d = null;
+  try { const raw = await dbCmd(['GET', 'jc:room:' + name]); d = raw ? JSON.parse(raw) : null; } catch {}
+  if (rooms.has(name)) return;
+  const r = room(name);
+  if (d) {
+    r.ownerTok = /^[a-f0-9]{64}$/.test(d.o || '') ? d.o : ''; r.ownerAcct = /^[a-f0-9]{16}$/.test(d.a || '') ? d.a : '';
+    for (const k of ['topic', 'desc', 'rules']) r.about[k] = clean(d.about && d.about[k], k === 'topic' ? 80 : k === 'desc' ? 300 : 500);
+    r.bg = d.bg && (d.bg.k || d.bg.img) ? d.bg : null; r.pin = d.pin && d.pin.id ? d.pin : null;
+    (Array.isArray(d.banned) ? d.banned : []).slice(0, 100).forEach(e => { if (Array.isArray(e) && /^(ip:[0-9a-fA-F:.]{3,45}|a:[a-f0-9]{16})$/.test(String(e[0]))) r.banned.set(e[0], { nick: clean(e[1] && e[1].nick, 20), t: Number(e[1] && e[1].t) || 0 }); });
+  }
 }
 function isKicked(r, ip) {
   const t = r.kicked.get(ip);
@@ -67,6 +100,11 @@ function broadcast(name, msg) {
 function limited(ip) {
   const now = Date.now(), a = (hits.get(ip) || []).filter(t => now - t < 10000);
   a.push(now); hits.set(ip, a); return a.length > 8;
+}
+const toolHits = new Map();
+function toolLimited(ip) {   // room-owner actions (delete, pin, ban...) get their own, roomier limit than chat messages
+  const now = Date.now(), a = (toolHits.get(ip) || []).filter(t => now - t < 10000);
+  a.push(now); toolHits.set(ip, a); return a.length > 30;
 }
 function readBody(req, max, cb) {
   let body = '';
@@ -150,8 +188,17 @@ const dbOn = () => !!DB_URL && dbReady;
 const acctBanned = id => acctBans.has(id);
 const auth = require('./auth')({ db: dbCmd, dbReady: dbOn, isAcctBanned: acctBanned,
   mailUrl: envClean(process.env.MAIL_RELAY_URL), mailSecret: envClean(process.env.MAIL_RELAY_SECRET), mailDaily: process.env.MAIL_DAILY_LIMIT });
+function liveByAcct(id) {
+  const out = [];
+  for (const r of rooms.values()) for (const c of r.clients) if (c.acct === id) out.push(c);
+  return out;
+}
+const social = require('./social')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), originOk: req => auth.originOk(req), liveByAcct,
+  blockedBy: (owner, other) => !!(dmBlocks.get(owner) && dmBlocks.get(owner).has(other)), acctIid: id => acctIid(id), rooms, closed, okRoom, json, readBody, limited: ip => toolLimited(ip) });
 const images = require('./images')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
   budgetMB: Number(process.env.IMAGE_BUDGET_MB) || 200, ttlDays: 7 });
+const voice = require('./voice')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
+  budgetMB: Number(process.env.VOICE_BUDGET_MB) || 50, ttlDays: 3 });
 const acctIid = id => sha('acct:' + id).slice(0, 16);   // DM identity of an account, the same on every device
 function who(req, body) {   // who is making a DM request: an account (cookie) or a guest (secret code dk)
   const user = auth.session(req);
@@ -159,7 +206,7 @@ function who(req, body) {   // who is making a DM request: an account (cookie) o
 }
 if (DB_URL) dbLoad();
 async function shutdown() {   // Render sends SIGTERM on every deploy: save pending changes first
-  try { await Promise.race([flush(), new Promise(r => setTimeout(r, 4000))]); } finally { process.exit(0); }
+  try { await Promise.race([Promise.all([flush(), flushRooms()]), new Promise(r => setTimeout(r, 4000))]); } finally { process.exit(0); }
 }
 process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 
@@ -194,15 +241,34 @@ function banAcct(id, name, reason) {
   kick(c => c.acct === id, 'Your account has been banned.');
   reports.forEach(r => { if (r.acct === id && r.status === 'open') r.status = 'banned'; });
   images.idsByUser(id).then(ids => Promise.all(ids.map(i => dropImage(i, false)))).catch(() => {});   // pictures this account uploaded recently go with it
+  voice.idsByUser(id).then(ids => Promise.all(ids.map(i => dropVoice(i, false)))).catch(() => {});   // and its voice notes
   touch('acctbans'); touch('reports');
 }
 // Remove a picture everywhere: the stored copy, the room history that new joiners would see, and the screens of
 // everybody who is online right now (they swap the picture for "Picture deleted").
+async function dropVoice(id, keepEvidence) {   // same as dropImage, for voice notes
+  await voice.remove(id, keepEvidence);
+  const hit = new Set();
+  for (const s of sent.values()) if (s.aud === id) { delete s.aud; s.audGone = true; hit.add(s.room); }
+  for (const [name, r] of rooms) for (const m of r.history) if (m.aud === id) { delete m.aud; m.audGone = true; hit.add(name); }
+  const ev = `data: ${JSON.stringify({ auddel: id })}\n\n`;
+  for (const name of hit) { const r = rooms.get(name); if (r) r.clients.forEach(c => c.write(ev)); }
+  const dev = `data: ${JSON.stringify({ dmdel: { aud: id } })}\n\n`, seen = new Set();
+  for (const d of dmLog.values()) if (d.aud === id) {
+    delete d.aud; d.audGone = true;
+    for (const iid of [d.from, d.to]) for (const c of liveByIid(iid)) if (!seen.has(c)) { seen.add(c); c.write(dev); }
+  }
+}
 async function dropImage(id, keepEvidence) {
   await images.remove(id, keepEvidence);
   const hit = new Set();
   for (const s of sent.values()) if (s.img === id) { delete s.img; s.imgGone = true; hit.add(s.room); }
   for (const [name, r] of rooms) for (const m of r.history) if (m.img === id) { delete m.img; m.imgGone = true; hit.add(name); }
+  for (const [name, r] of rooms) if (r.bg && r.bg.img === id) { r.bg = null; hit.add(name); r.clients.forEach(c => c.write(`data: ${JSON.stringify({ roombg: null })}\n\n`)); }
+  for (const p of dmPairs.values()) if (p.bg && p.bg.img === id) {
+    p.bg = null;
+    for (const [me, other] of [[p.from, p.to], [p.to, p.from]]) for (const c of liveByIid(me)) c.write(`data: ${JSON.stringify({ dmbg: { with: other, bg: null } })}\n\n`);
+  }
   const ev = `data: ${JSON.stringify({ imgdel: id })}\n\n`;
   for (const name of hit) { const r = rooms.get(name); if (r) r.clients.forEach(c => c.write(ev)); }
   const dev = `data: ${JSON.stringify({ dmdel: { img: id } })}\n\n`, seen = new Set();
@@ -243,6 +309,8 @@ async function handle(req, res) {
     return res.end(content);
   }
   if (auth.handle(req, res, url, ip, seo.siteBase(req), readBody)) return;   // /auth/*, /verify, /reset
+  if (url.pathname === '/features') return json(res, 200, FEAT);
+  if ((!FEAT.voice && /^\/(vn|vn\/delete|vn\/[a-f0-9]{32}|admin\/api\/voice)$/.test(url.pathname)) || (!FEAT.social && /^\/(subs|friends)$/.test(url.pathname))) { res.writeHead(404); return res.end(); }
   if (url.pathname === '/img' && req.method === 'POST') {
     if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
     return images.upload(req, res, ip, json, readBuf);
@@ -264,6 +332,35 @@ async function handle(req, res) {
   }
   const imgMatch = req.method === 'GET' && url.pathname.match(/^\/img\/([a-f0-9]{32})$/);
   if (imgMatch) return images.serve(req, res, imgMatch[1]);
+  if (url.pathname === '/vn' && req.method === 'POST') {
+    if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
+    return voice.upload(req, res, ip, json, readBuf);
+  }
+  if (url.pathname === '/vn/delete' && req.method === 'POST') {
+    if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
+    return readBody(req, 300, async body => {
+      try {
+        const user = auth.session(req), id = String(JSON.parse(body).id || '');
+        if (!user) return json(res, 401, { error: 'login' });
+        if (!/^[a-f0-9]{32}$/.test(id)) return json(res, 400, { error: 'bad_id' });
+        if (voice.deleteLimited(user.id)) return json(res, 429, { error: 'rate' });
+        if ((await voice.ownerOf(id)) !== user.id) return json(res, 404, { error: 'not_found' });
+        await dropVoice(id, true);
+        res.writeHead(204); res.end();
+      } catch (e) { json(res, e instanceof SyntaxError ? 400 : 503, { error: 'unavailable' }); }
+    });
+  }
+  const vnMatch = req.method === 'GET' && url.pathname.match(/^\/vn\/([a-f0-9]{32})$/);
+  if (vnMatch) return voice.serve(req, res, vnMatch[1]).catch(() => { if (!res.headersSent) { res.writeHead(503); } res.end(); });
+  if (url.pathname === '/admin/api/voice' && req.method === 'GET') {
+    if (!adminAuth(req, res, ip)) return;
+    const id = String(url.searchParams.get('id') || '');
+    if (!/^[a-f0-9]{32}$/.test(id)) return json(res, 400, { error: 'bad id' });
+    const v = await voice.read(id).catch(() => null);
+    if (!v) return json(res, 404, { error: 'gone' });
+    res.writeHead(200, { 'Content-Type': v.mime, 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+    return res.end(v.buf);
+  }
   if (req.method === 'GET' || req.method === 'HEAD') {
     const page = seo.route(url.pathname, seo.siteBase(req));
     if (page) {
@@ -288,6 +385,7 @@ async function handle(req, res) {
       acctBans: [...acctBans].map(([id, b]) => ({ id, ...b })),
       accounts: auth.status(),
       images: images.status(),
+      voice: voice.status(),
     });
   }
   // A reported picture, for the admin page (the token travels in a header, so the page fetches it as a blob)
@@ -332,12 +430,18 @@ async function handle(req, res) {
           if (!/^[a-f0-9]{32}$/.test(id || '')) return json(res, 400, { error: 'no image' });
           await dropImage(id, false);
           if (rep) { rep.status = 'image removed'; touch('reports'); }
+        } else if (m.a === 'delvn') {
+          const id = rep ? rep.aud : String(m.id || '');
+          if (!/^[a-f0-9]{32}$/.test(id || '')) return json(res, 400, { error: 'no voice note' });
+          await dropVoice(id, false);
+          if (rep) { rep.status = 'voice note removed'; touch('reports'); }
         } else return json(res, 400, { error: 'unknown action' });
         json(res, 200, { ok: true });
       } catch { json(res, 400, { error: 'bad request' }); }
     });
   }
 
+  if (url.pathname === '/subs' || url.pathname === '/friends') return social.handle(req, res, url, ip);
   if (url.pathname === '/rooms') {
     const q = clean(url.searchParams.get('q'), 30).toLowerCase();
     const list = [...rooms].filter(([n, r]) => !n.startsWith('p-') && r.clients.size && n.includes(q) && !closed.has(n))
@@ -352,26 +456,28 @@ async function handle(req, res) {
     if (isBanned(ip)) { res.writeHead(403); return res.end('banned'); }
     if (closed.has(name)) { res.writeHead(403); return res.end('closed'); }
     if (!user && await auth.nameReserved(nick)) { res.writeHead(403); return res.end('reserved'); }   // that name belongs to an account
+    await ensureRoom(name);
     const r = room(name), otok = String(url.searchParams.get('otok') || '');
     // The first person to open a private room with a valid secret becomes its owner.
-    if (name.startsWith('p-') && okTok(otok) && !r.ownerTok) r.ownerTok = sha(otok);
-    const owner = !!r.ownerTok && okTok(otok) && sha(otok) === r.ownerTok;
-    if (!owner && isKicked(r, ip)) { res.writeHead(403); return res.end('kicked'); }
+    if (name.startsWith('p-') && okTok(otok) && !r.ownerTok) { r.ownerTok = sha(otok); saveRoom(name); }
+    const owner = ownsRoom(r, user, otok);
+    if (owner && user && !r.ownerAcct) { r.ownerAcct = user.id; saveRoom(name); }   // an account that owns a room keeps it on every device
+    if (!owner && (isKicked(r, ip) || roomBanned(r, ip, user))) { res.writeHead(403); return res.end('kicked'); }
     conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner;
     res.acct = user ? user.id : '';
     res.uid = user ? 'a' + user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
     res.iid = user ? acctIid(user.id) : iidOf(url.searchParams.get('dk'));   // '' for old pages without dk: they simply have no DM
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid, uid: res.uid } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid, uid: res.uid }, bg: r.bg || null, about: r.about, pin: r.pin })}\n\n`);
     r.clients.add(res);
-    sys(name, `${nick} joined`);
+    sys(name, '');   // no chat notice, only the member list is refreshed
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
     req.on('close', () => {
       clearInterval(ping); r.clients.delete(res);
       conns.set(ip, Math.max(0, (conns.get(ip) || 1) - 1));
-      sys(name, `${nick} left`);
-      if (!r.clients.size) setTimeout(() => { if (!r.clients.size) rooms.delete(name); }, 600000);
+      sys(name, '');
+      if (!r.clients.size) setTimeout(() => { if (!r.clients.size && rooms.get(name) === r) rooms.delete(name); }, 600000);
     });
     return;
   }
@@ -380,21 +486,23 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), user = auth.session(req);
         let text = clean(m.text, 500), nick = clean(m.nick, 20);
-        const imgId = m.img ? String(m.img) : '';
+        const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(30, Math.round(Number(m.dur) || 1)));
         if (user) nick = user.name;
-        if (!okRoom(name) || (!text && !imgId) || !nick) { res.writeHead(400); return res.end(); }
-        if (imgId && !user) return json(res, 403, { error: 'login' });                       // only accounts may send pictures
+        if (!okRoom(name) || (!text && !imgId && !audId) || (imgId && audId) || !nick) { res.writeHead(400); return res.end(); }
+        if ((imgId || audId) && !user) return json(res, 403, { error: 'login' });                       // only accounts may send pictures and voice notes
         if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });   // and only ones they uploaded themselves
+        if (audId && !voice.owns(audId, user.id)) return json(res, 400, { error: 'bad_audio' });
         if (!user && await auth.nameReserved(nick)) return json(res, 403, { error: 'reserved' });
         if (isBanned(ip) || closed.has(name)) { res.writeHead(403); return res.end(); }
         const r = rooms.get(name);
-        if (r && isKicked(r, ip) && !(r.ownerTok && okTok(String(m.otok || '')) && sha(String(m.otok)) === r.ownerTok)) { res.writeHead(403); return res.end(); }
+        if (r && (isKicked(r, ip) || roomBanned(r, ip, user)) && !ownsRoom(r, user, m.otok)) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
         const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
         if (user) msg.v = true;      // verified account badge
         if (imgId) msg.img = imgId;
-        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}) });   // ip stays server-side, never broadcast
+        if (audId) { msg.aud = audId; msg.dur = dur; }
+        sent.set(msg.id, { ip, room: name, nick, text, t: msg.t, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId } : {}) });   // ip stays server-side, never broadcast
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
         broadcast(name, msg);
         res.writeHead(204); res.end();
@@ -424,7 +532,7 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name);
         if (limited(ip)) { res.writeHead(429); return res.end(); }
-        if (!r || !r.ownerTok || !okTok(String(m.otok || '')) || sha(String(m.otok)) !== r.ownerTok) { res.writeHead(403); return res.end(); }
+        if (!r || !ownsRoom(r, auth.session(req), m.otok)) { res.writeHead(403); return res.end(); }
         const target = [...r.clients].find(c => c.cid === String(m.cid || ''));
         if (!target || target.owner) { res.writeHead(404); return res.end(); }
         r.kicked.set(target.ip, Date.now() + 3600000);
@@ -439,10 +547,11 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), { user, iid: from } = who(req, m), to = String(m.to || '');
         let text = clean(m.text, 500);
-        const imgId = m.img ? String(m.img) : '';
-        if (!from || !okIid(to) || to === from || (!text && !imgId)) return json(res, 400, { error: 'bad request' });
-        if (imgId && !user) return json(res, 403, { error: 'login' });
+        const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(30, Math.round(Number(m.dur) || 1)));
+        if (!from || !okIid(to) || to === from || (!text && !imgId && !audId) || (imgId && audId)) return json(res, 400, { error: 'bad request' });
+        if ((imgId || audId) && !user) return json(res, 403, { error: 'login' });
         if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });
+        if (audId && !voice.owns(audId, user.id)) return json(res, 400, { error: 'bad_audio' });
         if (isBanned(ip)) return json(res, 403, { error: 'banned' });
         const mine = liveByIid(from);
         if (!mine.length) return json(res, 403, { error: 'not online' });   // you must be connected to a room
@@ -468,11 +577,105 @@ async function handle(req, res) {
         pair.t = now;
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
         const id = crypto.randomUUID().slice(0, 8);
-        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}) });
+        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}) });
         if (dmLog.size > 1000) dmLog.delete(dmLog.keys().next().value);
-        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request, ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}) } })}\n\n`;
+        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request, ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}), ...(pair.bg ? { bg: pair.bg } : {}) } })}\n\n`;
         targets.forEach(c => c.write(data));
         json(res, 200, { id, t: now });
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
+
+
+  // ---- room tools for the owner of a private room: about text, ban, delete messages, pin, clear ----
+  if (/^\/(room\/(about|manage|ban|unban|clear)|msgdel|pin)$/.test(url.pathname) && req.method === 'POST') {
+    return readBody(req, 2500, body => {
+      try {
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req), p = url.pathname;
+        if (!r || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
+        if (toolLimited(ip)) return json(res, 429, { error: 'slow down' });
+        const owner = name.startsWith('p-') && ownsRoom(r, user, m.otok), all = data => r.clients.forEach(c => c.write(`data: ${JSON.stringify(data)}\n\n`));
+        if (p === '/msgdel') {   // the owner can delete any message, everybody else only their own
+          const id = String(m.id || ''), s = sent.get(id), i = r.history.findIndex(x => x.id === id);
+          const mine = !!s && s.room === name && s.ip === ip && (!s.acct || (!!user && user.id === s.acct));
+          if (i < 0 || !(owner || mine)) return json(res, 403, { error: 'not allowed' });
+          const msg = r.history[i]; r.history.splice(i, 1);
+          if (r.pin && r.pin.id === id) { r.pin = null; all({ pin: null }); saveRoom(name); }
+          all({ del: id });
+          if (msg.img) dropImage(msg.img, true).catch(() => {});
+          return json(res, 200, { ok: true });
+        }
+        if (!owner) return json(res, 403, { error: 'owner only' });
+        if (p === '/pin') {
+          if (!m.id) { r.pin = null; } else {
+            const msg = r.history.find(x => x.id === String(m.id));
+            if (!msg) return json(res, 404, { error: 'gone' });
+            r.pin = { id: msg.id, nick: msg.nick, text: clean(msg.text, 200), ...(msg.img ? { img: msg.img } : {}) };
+          }
+          all({ pin: r.pin }); saveRoom(name); return json(res, 200, { ok: true });
+        }
+        if (p === '/room/about') {
+          r.about = { topic: clean(m.topic, 80), desc: clean(m.desc, 300), rules: clean(m.rules, 500) };
+          all({ about: r.about }); saveRoom(name); return json(res, 200, { ok: true });
+        }
+        if (p === '/room/manage') return json(res, 200, { about: r.about, banned: [...r.banned].map(([key, b]) => ({ key, nick: b.nick, t: b.t })) });
+        if (p === '/room/clear') { r.history.length = 0; r.pin = null; all({ clear: true }); all({ pin: null }); saveRoom(name); return json(res, 200, { ok: true }); }
+        if (p === '/room/unban') { (Array.isArray(m.keys) ? m.keys : [m.key]).slice(0, 4).forEach(k => r.banned.delete(String(k || ''))); saveRoom(name); return json(res, 200, { ok: true }); }
+        if (p === '/room/ban') {
+          const target = [...r.clients].find(c => c.cid === String(m.cid || ''));
+          if (!target || target.owner) return json(res, 404, { error: 'not found' });
+          if (r.banned.size >= 100) return json(res, 400, { error: 'ban list full' });
+          const b = { nick: target.nick, t: Date.now() };
+          r.banned.set('ip:' + target.ip, b); if (target.acct) r.banned.set('a:' + target.acct, b);
+          kick((c, n) => n === name && !c.owner && (c.ip === target.ip || (target.acct && c.acct === target.acct)), 'You were banned from this room by the owner.');
+          saveRoom(name); return json(res, 200, { ok: true });
+        }
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
+  // Custom chat background. bg = null (remove), { k: 'c1'..'c8' } (colour preset) or { img: <picture id> } (verified accounts only).
+  function cleanBg(m, user) {
+    const b = m && m.bg;
+    if (!b) return { ok: true, bg: null };
+    if (typeof b.k === 'string' && /^c[1-8]$/.test(b.k)) return { ok: true, bg: { k: b.k } };
+    if (typeof b.img === 'string' && /^[a-f0-9]{32}$/.test(b.img)) {
+      if (!user) return { ok: false, code: 403, error: 'login' };
+      if (!images.owns(b.img, user.id)) return { ok: false, code: 400, error: 'bad_image' };
+      return { ok: true, bg: { img: b.img } };
+    }
+    return { ok: false, code: 400, error: 'bad request' };
+  }
+  // The owner of a private room changes the room background, everyone in the room sees it.
+  if (url.pathname === '/bg' && req.method === 'POST') {
+    return readBody(req, 600, body => {
+      try {
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req);
+        if (!r || !name.startsWith('p-') || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
+        if (!ownsRoom(r, user, m.otok)) return json(res, 403, { error: 'owner only' });
+        if (limited(ip)) return json(res, 429, { error: 'slow down' });
+        const c = cleanBg(m, user);
+        if (!c.ok) return json(res, c.code, { error: c.error });
+        r.bg = c.bg; saveRoom(name);
+        const data = `data: ${JSON.stringify({ roombg: r.bg })}\n\n`;
+        r.clients.forEach(cl => cl.write(data));
+        res.writeHead(204); res.end();
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
+  // Either person of an accepted private conversation changes its background, both sides see it.
+  if (url.pathname === '/dm/bg' && req.method === 'POST') {
+    return readBody(req, 600, body => {
+      try {
+        const m = JSON.parse(body), { user, iid: me } = who(req, m), other = String(m.to || '');
+        if (!me || !okIid(other) || isBanned(ip)) return json(res, 400, { error: 'bad request' });
+        const pair = dmPairs.get([me, other].sort().join(':'));
+        if (!pair || !pair.accepted) return json(res, 409, { error: 'not accepted' });
+        if (limited(ip)) return json(res, 429, { error: 'slow down' });
+        const c = cleanBg(m, user);
+        if (!c.ok) return json(res, c.code, { error: c.error });
+        pair.bg = c.bg; pair.t = Date.now();
+        for (const [a, b] of [[me, other], [other, me]]) for (const cl of liveByIid(a)) cl.write(`data: ${JSON.stringify({ dmbg: { with: b, bg: pair.bg } })}\n\n`);
+        res.writeHead(204); res.end();
       } catch { json(res, 400, { error: 'bad request' }); }
     });
   }
@@ -510,7 +713,7 @@ async function handle(req, res) {
         let src = sent.get(id);
         if (!src) {   // a private message can only be reported by the person it was sent to
           const d = dmLog.get(id);
-          if (d && who(req, b).iid === d.to) src = { ip: d.ip, room: 'dm', nick: d.fromNick, text: d.text, t: d.t, dm: true, ...(d.acct ? { acct: d.acct } : {}), ...(d.img ? { img: d.img } : {}) };
+          if (d && who(req, b).iid === d.to) src = { ip: d.ip, room: 'dm', nick: d.fromNick, text: d.text, t: d.t, dm: true, ...(d.acct ? { acct: d.acct } : {}), ...(d.img ? { img: d.img } : {}), ...(d.aud ? { aud: d.aud } : {}) };
         }
         if (!src) return;   // we only trust our own copy of the message, not what the client sends
         const open = reports.find(r => r.msgId === id && r.status === 'open');
@@ -518,8 +721,9 @@ async function handle(req, res) {
         reports.unshift({ rid: crypto.randomUUID().slice(0, 8), msgId: id, ...src, count: 1, reporters: [ip], status: 'open', at: Date.now() });
         if (reports.length > 200) reports.pop();
         touch('reports');
+        if (src.aud) voice.keep(src.aud).catch(e => console.error('VN keep', e.message));
         if (src.img) images.keep(src.img).catch(e => console.error('IMG keep', e.message));   // evidence copy, kept 14 days even if the sender deletes the picture
-        console.log('REPORT', src.room, src.nick, src.img ? '[image]' : src.text.slice(0, 100));
+        console.log('REPORT', src.room, src.nick, src.img ? '[image]' : src.aud ? '[voice note]' : src.text.slice(0, 100));
       } catch {}
     });
   }
