@@ -49,14 +49,17 @@ function render(s){
   row.append(btn('Ban 24h',()=>act({a:'ban',rid:r.rid,hours:24})),btn('Ban forever',()=>act({a:'ban',rid:r.rid,hours:0})));
   if(!r.dm)row.append(btn('Close room',()=>act({a:'close',rid:r.rid}),1));
   row.append(btn('Dismiss',()=>act({a:'dismiss',rid:r.rid}),1));
-  const txt=h('div',r.text||(r.img?'(picture only)':''),'txt');
+  const txt=h('div',r.text||(r.img?'(picture only)':r.aud?'(voice note only)':''),'txt');
   if(r.img){const pb=btn('Show picture',async()=>{try{const x=await call('/admin/api/img?id='+r.img);if(!x.ok){pb.textContent='Picture is gone';return}
    const im=h('img');im.src=URL.createObjectURL(await x.blob());im.style.cssText='display:block;max-width:100%;max-height:320px;margin-top:6px;border-radius:8px';txt.append(im);pb.remove()}catch{}},1);row.append(pb);
    row.append(btn('Delete picture',()=>act({a:'delimg',rid:r.rid}),1))}
+  if(r.aud){const vb=btn('Play voice note',async()=>{try{const x=await call('/admin/api/voice?id='+r.aud);if(!x.ok){vb.textContent='Voice note is gone';return}
+   const au=h('audio');au.controls=true;au.src=URL.createObjectURL(await x.blob());au.style.cssText='display:block;margin-top:6px;max-width:100%';txt.append(au);vb.remove()}catch{}},1);row.append(vb);
+   row.append(btn('Delete voice note',()=>act({a:'delvn',rid:r.rid}),1))}
   if(r.acct)row.append(btn('Ban account',()=>act({a:'banacct',rid:r.rid})));
   c.append(top,txt,h('div','IP '+r.ip+(banned?' (already banned)':''),'mut'),row);R.append(c)});
- const ac=s.accounts||{},im=s.images||{};
- $('extra').textContent='Accounts: '+(ac.enabled?'on':'off'+(ac.missing?' (missing: '+[].concat(ac.missing).join(', ')+')':''))+(ac.enabled?' · mail today '+ac.mailToday+'/'+ac.mailLimit:'')+(ac.mailError?' · mail problem: '+ac.mailError:'')+(ac.initError?' · '+ac.initError:'')+' | Pictures: '+(im.usedMB||0)+'/'+(im.budgetMB||0)+' MB'+(im.error?' · '+im.error:'');
+ const ac=s.accounts||{},im=s.images||{},vn=s.voice||{};
+ $('extra').textContent='Accounts: '+(ac.enabled?'on':'off'+(ac.missing?' (missing: '+[].concat(ac.missing).join(', ')+')':''))+(ac.enabled?' · mail today '+ac.mailToday+'/'+ac.mailLimit:'')+(ac.mailError?' · mail problem: '+ac.mailError:'')+(ac.initError?' · '+ac.initError:'')+' | Pictures: '+(im.usedMB||0)+'/'+(im.budgetMB||0)+' MB'+(im.error?' · '+im.error:'')+(s.voice?' | Voice notes: '+(vn.usedMB||0)+'/'+(vn.budgetMB||0)+' MB'+(vn.error?' · '+vn.error:''):'');
  const AB=$('abans');AB.innerHTML='';if(!(s.acctBans||[]).length)empty(AB,'None.');
  (s.acctBans||[]).forEach(x=>{const row=h('div','','row');row.append(h('span',x.name||x.id,'pill'),h('span',x.reason||'','mut'),btn('Unban',()=>act({a:'unbanacct',id:x.id}),1));AB.append(row)});
  const L=$('live');L.innerHTML='';if(!s.live.length)empty(L,'No one online.');
