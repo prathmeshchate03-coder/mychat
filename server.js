@@ -45,7 +45,7 @@ function liveByIid(iid) {
 
 function room(name) {
   // ownerTok: sha256 of the creator's secret (private rooms only). kicked: ip -> expiry time.
-  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', ownerAcct: '', kicked: new Map(), banned: new Map(), about: { topic: '', desc: '', rules: '' }, pin: null, bg: null, staff: new Map(), logs: [] });
+  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', ownerAcct: '', kicked: new Map(), banned: new Map(), about: { topic: '', desc: '', rules: '' }, pin: null, bg: null, staff: new Map(), logs: [], pub: !name.startsWith('p-') });
   return rooms.get(name);
 }
 // Join/leave notice that also carries the current member list (no IPs, only public info).
@@ -57,7 +57,10 @@ function sys(name, text) {
 // ---- private room settings: saved in the database for 30 days so an owner can come back to the same room ----
 const ownsRoom = (r, user, otok) => !!r && ((!!r.ownerTok && okTok(String(otok || '')) && sha(String(otok)) === r.ownerTok) || (!!user && !!r.ownerAcct && user.id === r.ownerAcct));
 // roles: 3 owner, 2 admin, 1 mod, 0 nobody. Staff are verified accounts, saved with the room.
-const roleLv = (r, user, otok) => ownsRoom(r, user, otok) ? 3 : (user && r.staff.has(user.id) ? (r.staff.get(user.id).role === 'admin' ? 2 : 1) : 0);
+// The site owner (SITE_OWNER = account name(s), comma separated) is the owner of every public room; private rooms stay private.
+const SITE_OWNERS = new Set(String(process.env.SITE_OWNER || '').toLowerCase().split(',').map(x => x.trim()).filter(Boolean));
+const isSiteOwner = u => !!u && SITE_OWNERS.has(String(u.name || '').toLowerCase());
+const roleLv = (r, user, otok) => (ownsRoom(r, user, otok) || (r.pub && isSiteOwner(user))) ? 3 : (user && r.staff.has(user.id) ? (r.staff.get(user.id).role === 'admin' ? 2 : 1) : 0);
 const roleName = l => l >= 3 ? 'owner' : l === 2 ? 'admin' : l === 1 ? 'mod' : '';
 function addLog(name, r, ev, content, staff, target) {   // newest first, last 100 kept
   r.logs.unshift({ id: (r.logs[0] ? r.logs[0].id : 0) + 1, t: Date.now(), ev, content: clean(content, 100), staff: clean(staff, 20), target: clean(target, 20) });
@@ -72,7 +75,7 @@ function refreshRoles(name, r) {   // after a staff change: tell each affected p
 const roomBanned = (r, ip, user) => r.banned.has('ip:' + ip) || (!!user && r.banned.has('a:' + user.id));
 const roomDirty = new Set(); let roomTimer = null;
 function saveRoom(name) {
-  if (!DB_URL || !name.startsWith('p-')) return;
+  if (!DB_URL) return;
   roomDirty.add(name); if (!roomTimer) roomTimer = setTimeout(flushRooms, 3000);
 }
 async function flushRooms() {
@@ -80,13 +83,13 @@ async function flushRooms() {
   if (!dbOn()) return;
   for (const name of [...roomDirty]) {
     roomDirty.delete(name);
-    const r = rooms.get(name); if (!r || !(r.ownerTok || r.ownerAcct)) continue;
-    try { await dbCmd(['SET', 'jc:room:' + name, JSON.stringify({ o: r.ownerTok, a: r.ownerAcct, about: r.about, bg: r.bg, pin: r.pin, banned: [...r.banned], s: [...r.staff], l: r.logs }), 'EX', 30 * 86400]); }
+    const r = rooms.get(name); if (!r || !(r.ownerTok || r.ownerAcct || r.pub)) continue;
+    try { await dbCmd(['SET', 'jc:room:' + name, JSON.stringify({ o: r.ownerTok, a: r.ownerAcct, about: r.about, bg: r.bg, pin: r.pin, banned: [...r.banned], s: [...r.staff], l: r.logs }), 'EX', (r.pub ? 180 : 30) * 86400]); }
     catch (e) { console.error('ROOM SAVE', e.message); roomDirty.add(name); roomTimer = roomTimer || setTimeout(flushRooms, 30000); }
   }
 }
 async function ensureRoom(name) {
-  if (rooms.has(name) || !name.startsWith('p-') || !dbOn()) return;
+  if (rooms.has(name) || !dbOn()) return;
   let d = null;
   try { const raw = await dbCmd(['GET', 'jc:room:' + name]); d = raw ? JSON.parse(raw) : null; } catch {}
   if (rooms.has(name)) return;
@@ -476,8 +479,8 @@ async function handle(req, res) {
     const r = room(name), otok = String(url.searchParams.get('otok') || '');
     // The first person to open a private room with a valid secret becomes its owner.
     if (name.startsWith('p-') && okTok(otok) && !r.ownerTok) { r.ownerTok = sha(otok); saveRoom(name); }
-    const lv = name.startsWith('p-') ? roleLv(r, user, otok) : 0, owner = lv === 3;
-    if (owner && user && !r.ownerAcct) { r.ownerAcct = user.id; saveRoom(name); }   // an account that owns a room keeps it on every device
+    const lv = roleLv(r, user, otok), owner = lv === 3;
+    if (owner && user && !r.ownerAcct && !r.pub) { r.ownerAcct = user.id; saveRoom(name); }   // an account that owns a room keeps it on every device
     if (lv === 0 && (isKicked(r, ip) || roomBanned(r, ip, user))) { res.writeHead(403); return res.end('kicked'); }
     conns.set(ip, (conns.get(ip) || 0) + 1);
     res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner; res.role = lv;
@@ -548,7 +551,7 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name);
         if (limited(ip)) { res.writeHead(429); return res.end(); }
-        const lv = r && name.startsWith('p-') ? roleLv(r, auth.session(req), m.otok) : 0;
+        const lv = r ? roleLv(r, auth.session(req), m.otok) : 0;
         if (!r || lv < 1) { res.writeHead(403); return res.end(); }
         const target = [...r.clients].find(c => c.cid === String(m.cid || ''));
         if (!target || target.role > 0) { res.writeHead(404); return res.end(); }
@@ -612,7 +615,7 @@ async function handle(req, res) {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req), p = url.pathname;
         if (!r || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
         if (toolLimited(ip)) return json(res, 429, { error: 'slow down' });
-        const lv = name.startsWith('p-') ? roleLv(r, user, m.otok) : 0, owner = lv === 3, sn = staffName(r, user, lv), all = data => r.clients.forEach(c => c.write(`data: ${JSON.stringify(data)}\n\n`));
+        const lv = roleLv(r, user, m.otok), owner = lv === 3, sn = staffName(r, user, lv), all = data => r.clients.forEach(c => c.write(`data: ${JSON.stringify(data)}\n\n`));
         if (p === '/msgdel') {   // the owner can delete any message, everybody else only their own
           const id = String(m.id || ''), s = sent.get(id), i = r.history.findIndex(x => x.id === id);
           const mine = !!s && s.room === name && s.ip === ip && (!s.acct || (!!user && user.id === s.acct));
@@ -693,7 +696,7 @@ async function handle(req, res) {
     return readBody(req, 600, body => {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req);
-        if (!r || !name.startsWith('p-') || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
+        if (!r || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
         const lv = roleLv(r, user, m.otok);
         if (lv < 2) return json(res, 403, { error: 'admin only' });
         if (limited(ip)) return json(res, 429, { error: 'slow down' });
