@@ -24,9 +24,9 @@
 <input type="file" id="picfile" accept="image/*" hidden><input type="file" id="bgfile" accept="image/*" hidden>
 <div id="aboutm" class="modal" hidden role="dialog" aria-modal="true" aria-label="About this room"><div class="box"><div class="dmhead"><b>About this room</b><button type="button" id="aboutx" class="ghost sm">Close</button></div><div id="aboutbody"></div></div></div>
 <div id="managem" class="modal" hidden role="dialog" aria-modal="true" aria-label="Manage room"><div class="box"><div class="dmhead"><b>Manage room</b><button type="button" id="managex" class="ghost sm">Close</button></div>
-<div class="authbody"><input type="text" id="mt" maxlength="80" placeholder="Topic" aria-label="Topic"><textarea id="md" maxlength="300" rows="3" placeholder="Description" aria-label="Description"></textarea><textarea id="mr" maxlength="500" rows="4" placeholder="Rules" aria-label="Rules"></textarea>
-<button type="button" id="msave">Save</button><button type="button" id="mbg" class="ghost">Change background</button><button type="button" id="mclear" class="ghost">Clear all messages</button>
-<div class="uh">Banned from this room</div><div id="mban"></div><p id="mmsg" role="alert"></p></div></div></div>
+<div class="authbody"><input type="text" id="mt" class="adm" maxlength="80" placeholder="Topic" aria-label="Topic"><textarea id="md" class="adm" maxlength="300" rows="3" placeholder="Description" aria-label="Description"></textarea><textarea id="mr" class="adm" maxlength="500" rows="4" placeholder="Rules" aria-label="Rules"></textarea>
+<button type="button" id="msave" class="adm">Save</button><button type="button" id="mbg" class="ghost adm">Change background</button><button type="button" id="mclear" class="ghost">Clear all messages</button>
+<div class="uh">Staff</div><div id="mstaff"></div><div class="uh">Banned from this room</div><div id="mban"></div><div class="uh">Room log</div><div id="mlog"></div><p id="mmsg" role="alert"></p></div></div></div>
 <div id="bgm" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="bgttl"><div class="box">
 <div class="dmhead"><b id="bgttl">Chat background</b><button type="button" id="bgx" class="ghost sm">Close</button></div>
 <div id="bgsw" class="swatches"></div>
@@ -46,7 +46,7 @@
 </div></div></div>
 <script>
 const $=id=>document.getElementById(id);
-let nick=localStorage.nick,room,es,otok='',me={id:'',owner:false},users=[],lastTyping=0;
+let nick=localStorage.nick,room,es,otok='',me={id:'',owner:false,role:''},users=[],lastTyping=0;
 let acct=null,authOn=false;   // acct = {name,uid} while logged in; authOn = the site has accounts switched on
 const typers=new Map();
 // uid: a random id kept in this browser. It lets people block someone even if the nickname changes. Accounts use their own id.
@@ -118,7 +118,7 @@ $('ffg').onsubmit=async e=>{e.preventDefault();authMsg('Sending...',true);
  authMsg(r.ok?'If that email has an account, we sent a link to choose a new password.':(AERR[r.j.error]||'Something went wrong. Try again.'),r.ok)};
 
 function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';
- users=[];me={id:'',owner:false};applyBg($('msgs'),null);applyAbout(null);applyPin(null);typers.clear();showTyping();$('cnt').hidden=true;closePanels();
+ users=[];me={id:'',owner:false,role:''};applyBg($('msgs'),null);applyAbout(null);applyPin(null);typers.clear();showTyping();$('cnt').hidden=true;closePanels();
  if(pending&&pending.ctx==='room'&&!pending.busy)clearPending();
  otok=localStorage.getItem('otok:'+name)||'';
  if(es)es.close();
@@ -131,6 +131,7 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
   else if(d.friend)onFriend(d.friend);
   else if(d.del)document.querySelectorAll('#msgs .m').forEach(x=>{if(x.dataset.mid===d.del)x.remove()});
   else if('pin' in d)applyPin(d.pin);
+  else if('role' in d){me.role=d.role;renderUsers();notice(d.role?'You are now '+(d.role==='admin'?'an admin':'a mod')+' of this room.':'You are no longer staff of this room.')}
   else if(d.about)applyAbout(d.about);
   else if(d.clear)document.querySelectorAll('#msgs .m').forEach(x=>x.remove());
   else if('roombg' in d)applyBg($('msgs'),d.roombg);
@@ -155,8 +156,8 @@ function add(m){const box=$('msgs');
  const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
  rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
  d.append(rp);d.dataset.mid=m.id;
- if(mine||me.owner){const dl=el('a','delete');dl.tabIndex=0;dl.setAttribute('role','button');dl.onclick=()=>rpost('/msgdel',{id:m.id});d.append(dl)}
- if(me.owner){const pn=el('a','pin');pn.tabIndex=0;pn.setAttribute('role','button');pn.onclick=()=>rpost('/pin',{id:m.id});d.append(pn)}
+ if(mine||me.role){const dl=el('a','delete');dl.tabIndex=0;dl.setAttribute('role','button');dl.onclick=()=>rpost('/msgdel',{id:m.id});d.append(dl)}
+ if(me.role){const pn=el('a','pin');pn.tabIndex=0;pn.setAttribute('role','button');pn.onclick=()=>rpost('/pin',{id:m.id});d.append(pn)}
  if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
  if(isImgId(m.aud))d.append(audBox(m.aud,mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
  if(m.text)d.append(el('div',m.text));
@@ -261,7 +262,7 @@ async function setBg(bg){
  const r=await (isRoom?fetch('/bg',{method:'POST',body:JSON.stringify({room,otok,bg})}):dmCall('/dm/bg',{to:bgCtx,bg})).catch(()=>null);
  if(!r){bgSay('Network problem. Try again.');return false}
  if(r.status===204){$('bgm').hidden=true;return true}
- bgSay(r.status===409?'Wait until they accept your first message.':r.status===403?(isRoom?'Only the room owner can change this.':'You need to log in to use a photo.'):r.status===429?'Slow down a little.':'Could not change the background.');return false}
+ bgSay(r.status===409?'Wait until they accept your first message.':r.status===403?(isRoom?'Only the room owner or an admin can change this.':'You need to log in to use a photo.'):r.status===429?'Slow down a little.':'Could not change the background.');return false}
 $('bgup').onclick=()=>{
  if(!authOn)return bgSay('Photos are not switched on yet.');
  if(!acct){$('bgm').hidden=true;return openAuth('in','Log in or sign up to use your own photo.')}
@@ -279,7 +280,7 @@ const rpost=(p,b)=>fetch(p,{method:'POST',body:JSON.stringify({room,otok,...b})}
 function applyAbout(a){about=a||{topic:'',desc:'',rules:''}}
 function applyPin(p){pinned=p||null;const b=$('pinbar');b.innerHTML='';if(!pinned){b.hidden=true;return}
  b.hidden=false;const t=el('span','','pintxt'),n=el('b','📌 '+pinned.nick+': ');t.append(n,document.createTextNode(pinned.text||(pinned.img?'[picture]':'')));b.append(t);
- if(me.owner){const x=el('button','Unpin','ghost sm');x.onclick=()=>rpost('/pin',{id:null});b.append(x)}}
+ if(me.role){const x=el('button','Unpin','ghost sm');x.onclick=()=>rpost('/pin',{id:null});b.append(x)}}
 function banUser(u){if(!confirm('Ban '+u.nick+' from this room? They cannot come back until you unban them.'))return;
  rpost('/room/ban',{cid:u.id}).then(r=>{notice(r.ok?u.nick+' was banned.':'Could not ban '+u.nick+'.')})}
 function openAbout(){closePanels();const b=$('aboutbody');b.innerHTML='';b.append(el('h3','#'+room));
@@ -292,11 +293,24 @@ function renderBanned(list){const b=$('mban');b.innerHTML='';if(!list.length){b.
  const g=new Map();list.forEach(x=>{const k=x.nick+'|'+x.t;if(!g.has(k))g.set(k,{nick:x.nick,keys:[]});g.get(k).keys.push(x.key)});
  g.forEach(x=>{const row=el('div','','urow');row.append(el('span',x.nick,'un'));const ub=el('button','Unban','ghost sm');
   ub.onclick=async()=>{await rpost('/room/unban',{keys:x.keys});row.remove()};row.append(ub);b.append(row)})}
-async function openManage(){closePanels();$('mt').value=about.topic;$('md').value=about.desc;$('mr').value=about.rules;$('mmsg').textContent='';$('managem').hidden=false;
- try{const r=await rpost('/room/manage',{});if(r.ok)renderBanned((await r.json()).banned)}catch{}}
+const isAdm=()=>me.role==='admin'||me.role==='owner';
+async function setStaff(b,ok){const r=await rpost('/room/staff',b).catch(()=>null);notice(r&&r.ok?ok:'Could not change staff.');if(!$('managem').hidden)loadManage()}
+const LOGTXT={pin:'pinned a message',unpin:'unpinned a message',msgdel:'deleted a message',ban:'banned',bg:'changed the background',unban:'unbanned someone',kick:'removed',clear:'cleared all messages',about:'changed room info',staff_add:'made',staff_remove:'removed from staff'};
+function renderStaff(list){const b=$('mstaff');b.innerHTML='';b.append(el('p','Owner: full control.','mut'));
+ if(!list.length){b.append(el('p','No admins or mods yet. Open the online list and tap Make mod on someone with a verified account.','mut'));return}
+ list.forEach(x=>{const row=el('div','','urow');row.append(el('span',x.nick,'un'),el('span',x.role,'badge'));
+  if(me.role==='owner'||(me.role==='admin'&&x.role==='mod')){const rb=el('button','Remove','ghost sm');rb.onclick=()=>setStaff({acct:x.acct,role:'none'},x.nick+' was removed from staff.');row.append(rb)}b.append(row)})}
+function renderLogs(list){const b=$('mlog');b.innerHTML='';if(!list.length){b.append(el('p','Nothing yet.','mut'));return}
+ list.forEach(x=>{const d=new Date(x.t),t=d.toLocaleDateString([], {day:'numeric',month:'short'})+' '+d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  let line=x.staff+' '+(LOGTXT[x.ev]||x.ev);if(x.target)line+=' '+x.target+(x.ev==='staff_add'?' '+x.content:'');if(x.content&&x.ev!=='staff_add'&&x.ev!=='staff_remove')line+=': '+x.content;
+  const row=el('div','','logrow');row.append(el('span',t,'logt'),document.createTextNode(line));b.append(row)})}
+async function loadManage(){try{const r=await rpost('/room/manage',{});if(r.ok){const d=await r.json();renderBanned(d.banned);renderStaff(d.staff||[]);renderLogs(d.logs||[])}}catch{}}
+async function openManage(){closePanels();$('mt').value=about.topic;$('md').value=about.desc;$('mr').value=about.rules;$('mmsg').textContent='';
+ document.querySelectorAll('#managem .adm').forEach(x=>{x.hidden=!isAdm()});
+ $('managem').hidden=false;loadManage()}
 $('managex').onclick=()=>{$('managem').hidden=true};
 $('msave').onclick=async()=>{const r=await rpost('/room/about',{topic:$('mt').value,desc:$('md').value,rules:$('mr').value}).catch(()=>null);
- $('mmsg').textContent=r&&r.ok?'Saved.':'Could not save. Only the owner can do this.'};
+ $('mmsg').textContent=r&&r.ok?'Saved.':'Could not save. Only the owner or an admin can do this.'};
 $('mbg').onclick=()=>{$('managem').hidden=true;openBg('room')};
 $('mclear').onclick=async()=>{if(!confirm('Delete all messages in this room for everyone?'))return;const r=await rpost('/room/clear',{}).catch(()=>null);$('mmsg').textContent=r&&r.ok?'Messages cleared.':'Could not clear.'};
 
@@ -386,14 +400,17 @@ function renderUsers(){
  const p=$('users');p.innerHTML='';
  {const top=el('div','','toprow'),ab=el('button','About this room','ghost sm');ab.onclick=openAbout;top.append(ab);
   if(soc()){const sb=el('button',subs.some(x=>x.name===room)?'Unsubscribe':'Subscribe','ghost sm');sb.onclick=toggleSub;top.append(sb)}
-  if(me.owner){const mb=el('button','Manage room','ghost sm');mb.onclick=openManage;top.append(mb)}p.append(top)}
+  if(me.role){const mb=el('button','Manage room','ghost sm');mb.onclick=openManage;top.append(mb)}p.append(top)}
  users.forEach(u=>{const row=el('div','','urow'),nm=el('span',u.nick+(u.id===me.id?' (you)':''),'un');if(u.v)nm.append(tick());row.append(nm);
-  if(u.owner)row.append(el('span','owner','badge'));
+  if(u.role)row.append(el('span',u.role,'badge'));
   if(u.id!==me.id){
    if(u.iid&&me.iid&&u.iid!==me.iid&&!dmBlocked[u.iid]){const mb=el('button','Message','ghost sm');mb.onclick=()=>openDm(u.iid,u.nick,u.v);row.append(mb)}
    {const fid=idOfUid(u.uid);if(soc()&&fid&&u.uid!==uid)row.append(friendBtn(fid))}
    if(u.uid&&u.uid!==uid){const bb=el('button',blocked[u.uid]?'Unblock':'Block','ghost sm');bb.onclick=()=>blocked[u.uid]?unblock(u.uid):block(u.uid,u.nick);row.append(bb)}
-   if(me.owner&&!u.owner){const kb=el('button','Kick','ghost sm');kb.onclick=()=>kickUser(u);row.append(kb);const bn=el('button','Ban','ghost sm');bn.onclick=()=>banUser(u);row.append(bn)}}
+   if(me.role&&!u.role){const kb=el('button','Kick','ghost sm');kb.onclick=()=>kickUser(u);row.append(kb);const bn=el('button','Ban','ghost sm');bn.onclick=()=>banUser(u);row.append(bn)}
+   if(u.v&&me.role&&me.role!=='mod'&&u.role!=='owner'){
+    if(u.role!=='mod'&&u.role!=='admin'){const mm=el('button','Make mod','ghost sm');mm.onclick=()=>setStaff({cid:u.id,role:'mod'},u.nick+' is now a mod.');row.append(mm)}
+    if(me.role==='owner'&&u.role!=='admin'){const ma=el('button','Make admin','ghost sm');ma.onclick=()=>setStaff({cid:u.id,role:'admin'},u.nick+' is now an admin.');row.append(ma)}}}
   p.append(row)});
  const ids=Object.keys(blocked);
  if(ids.length){p.append(el('div','Blocked','uh'));
