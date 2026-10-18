@@ -45,17 +45,30 @@ function liveByIid(iid) {
 
 function room(name) {
   // ownerTok: sha256 of the creator's secret (private rooms only). kicked: ip -> expiry time.
-  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', ownerAcct: '', kicked: new Map(), banned: new Map(), about: { topic: '', desc: '', rules: '' }, pin: null, bg: null });
+  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', ownerAcct: '', kicked: new Map(), banned: new Map(), about: { topic: '', desc: '', rules: '' }, pin: null, bg: null, staff: new Map(), logs: [] });
   return rooms.get(name);
 }
 // Join/leave notice that also carries the current member list (no IPs, only public info).
 function sys(name, text) {
   const r = room(name);
   broadcast(name, { system: true, text, count: r.clients.size,
-    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, v: !!c.acct })) });
+    users: [...r.clients].map(c => ({ id: c.cid, uid: c.uid, iid: c.iid, nick: c.nick, owner: !!c.owner, role: roleName(c.role), v: !!c.acct })) });
 }
 // ---- private room settings: saved in the database for 30 days so an owner can come back to the same room ----
 const ownsRoom = (r, user, otok) => !!r && ((!!r.ownerTok && okTok(String(otok || '')) && sha(String(otok)) === r.ownerTok) || (!!user && !!r.ownerAcct && user.id === r.ownerAcct));
+// roles: 3 owner, 2 admin, 1 mod, 0 nobody. Staff are verified accounts, saved with the room.
+const roleLv = (r, user, otok) => ownsRoom(r, user, otok) ? 3 : (user && r.staff.has(user.id) ? (r.staff.get(user.id).role === 'admin' ? 2 : 1) : 0);
+const roleName = l => l >= 3 ? 'owner' : l === 2 ? 'admin' : l === 1 ? 'mod' : '';
+function addLog(name, r, ev, content, staff, target) {   // newest first, last 100 kept
+  r.logs.unshift({ id: (r.logs[0] ? r.logs[0].id : 0) + 1, t: Date.now(), ev, content: clean(content, 100), staff: clean(staff, 20), target: clean(target, 20) });
+  if (r.logs.length > 100) r.logs.length = 100;
+  saveRoom(name);
+}
+function refreshRoles(name, r) {   // after a staff change: tell each affected person their new role and refresh the member list
+  r.clients.forEach(c => { if (c.owner) return; const st = c.acct && r.staff.get(c.acct); const lv = st ? (st.role === 'admin' ? 2 : 1) : 0;
+    if (lv !== c.role) { c.role = lv; c.write(`data: ${JSON.stringify({ role: roleName(lv) })}\n\n`); } });
+  sys(name, '');
+}
 const roomBanned = (r, ip, user) => r.banned.has('ip:' + ip) || (!!user && r.banned.has('a:' + user.id));
 const roomDirty = new Set(); let roomTimer = null;
 function saveRoom(name) {
@@ -68,7 +81,7 @@ async function flushRooms() {
   for (const name of [...roomDirty]) {
     roomDirty.delete(name);
     const r = rooms.get(name); if (!r || !(r.ownerTok || r.ownerAcct)) continue;
-    try { await dbCmd(['SET', 'jc:room:' + name, JSON.stringify({ o: r.ownerTok, a: r.ownerAcct, about: r.about, bg: r.bg, pin: r.pin, banned: [...r.banned] }), 'EX', 30 * 86400]); }
+    try { await dbCmd(['SET', 'jc:room:' + name, JSON.stringify({ o: r.ownerTok, a: r.ownerAcct, about: r.about, bg: r.bg, pin: r.pin, banned: [...r.banned], s: [...r.staff], l: r.logs }), 'EX', 30 * 86400]); }
     catch (e) { console.error('ROOM SAVE', e.message); roomDirty.add(name); roomTimer = roomTimer || setTimeout(flushRooms, 30000); }
   }
 }
@@ -82,6 +95,8 @@ async function ensureRoom(name) {
     r.ownerTok = /^[a-f0-9]{64}$/.test(d.o || '') ? d.o : ''; r.ownerAcct = /^[a-f0-9]{16}$/.test(d.a || '') ? d.a : '';
     for (const k of ['topic', 'desc', 'rules']) r.about[k] = clean(d.about && d.about[k], k === 'topic' ? 80 : k === 'desc' ? 300 : 500);
     r.bg = d.bg && (d.bg.k || d.bg.img) ? d.bg : null; r.pin = d.pin && d.pin.id ? d.pin : null;
+    (Array.isArray(d.s) ? d.s : []).slice(0, 20).forEach(e => { if (Array.isArray(e) && /^[a-f0-9]{16}$/.test(String(e[0])) && e[1]) r.staff.set(e[0], { role: e[1].role === 'admin' ? 'admin' : 'mod', nick: clean(e[1].nick, 20), t: Number(e[1].t) || 0 }); });
+    (Array.isArray(d.l) ? d.l : []).slice(0, 100).forEach(x => { if (x && x.ev) r.logs.push({ id: Number(x.id) || 0, t: Number(x.t) || 0, ev: clean(x.ev, 16), content: clean(x.content, 100), staff: clean(x.staff, 20), target: clean(x.target, 20) }); });
     (Array.isArray(d.banned) ? d.banned : []).slice(0, 100).forEach(e => { if (Array.isArray(e) && /^(ip:[0-9a-fA-F:.]{3,45}|a:[a-f0-9]{16})$/.test(String(e[0]))) r.banned.set(e[0], { nick: clean(e[1] && e[1].nick, 20), t: Number(e[1] && e[1].t) || 0 }); });
   }
 }
@@ -102,6 +117,7 @@ function limited(ip) {
   a.push(now); hits.set(ip, a); return a.length > 8;
 }
 const toolHits = new Map();
+const staffName = (r, user, lv) => lv >= 3 ? 'Owner' : ((user && r.staff.get(user.id)) || {}).nick || 'staff';
 function toolLimited(ip) {   // room-owner actions (delete, pin, ban...) get their own, roomier limit than chat messages
   const now = Date.now(), a = (toolHits.get(ip) || []).filter(t => now - t < 10000);
   a.push(now); toolHits.set(ip, a); return a.length > 30;
@@ -460,16 +476,16 @@ async function handle(req, res) {
     const r = room(name), otok = String(url.searchParams.get('otok') || '');
     // The first person to open a private room with a valid secret becomes its owner.
     if (name.startsWith('p-') && okTok(otok) && !r.ownerTok) { r.ownerTok = sha(otok); saveRoom(name); }
-    const owner = ownsRoom(r, user, otok);
+    const lv = name.startsWith('p-') ? roleLv(r, user, otok) : 0, owner = lv === 3;
     if (owner && user && !r.ownerAcct) { r.ownerAcct = user.id; saveRoom(name); }   // an account that owns a room keeps it on every device
-    if (!owner && (isKicked(r, ip) || roomBanned(r, ip, user))) { res.writeHead(403); return res.end('kicked'); }
+    if (lv === 0 && (isKicked(r, ip) || roomBanned(r, ip, user))) { res.writeHead(403); return res.end('kicked'); }
     conns.set(ip, (conns.get(ip) || 0) + 1);
-    res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner;
+    res.ip = ip; res.cid = crypto.randomUUID().slice(0, 8); res.nick = nick; res.owner = owner; res.role = lv;
     res.acct = user ? user.id : '';
     res.uid = user ? 'a' + user.id : clean(url.searchParams.get('uid'), 24).replace(/[^a-zA-Z0-9]/g, '');
     res.iid = user ? acctIid(user.id) : iidOf(url.searchParams.get('dk'));   // '' for old pages without dk: they simply have no DM
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, iid: res.iid, uid: res.uid }, bg: r.bg || null, about: r.about, pin: r.pin })}\n\n`);
+    res.write(`data: ${JSON.stringify({ history: r.history, you: { id: res.cid, owner, role: roleName(lv), iid: res.iid, uid: res.uid }, bg: r.bg || null, about: r.about, pin: r.pin })}\n\n`);
     r.clients.add(res);
     sys(name, '');   // no chat notice, only the member list is refreshed
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
@@ -495,7 +511,7 @@ async function handle(req, res) {
         if (!user && await auth.nameReserved(nick)) return json(res, 403, { error: 'reserved' });
         if (isBanned(ip) || closed.has(name)) { res.writeHead(403); return res.end(); }
         const r = rooms.get(name);
-        if (r && (isKicked(r, ip) || roomBanned(r, ip, user)) && !ownsRoom(r, user, m.otok)) { res.writeHead(403); return res.end(); }
+        if (r && (isKicked(r, ip) || roomBanned(r, ip, user)) && roleLv(r, user, m.otok) === 0) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
         const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
@@ -532,11 +548,13 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name);
         if (limited(ip)) { res.writeHead(429); return res.end(); }
-        if (!r || !ownsRoom(r, auth.session(req), m.otok)) { res.writeHead(403); return res.end(); }
+        const lv = r && name.startsWith('p-') ? roleLv(r, auth.session(req), m.otok) : 0;
+        if (!r || lv < 1) { res.writeHead(403); return res.end(); }
         const target = [...r.clients].find(c => c.cid === String(m.cid || ''));
-        if (!target || target.owner) { res.writeHead(404); return res.end(); }
+        if (!target || target.role > 0) { res.writeHead(404); return res.end(); }
         r.kicked.set(target.ip, Date.now() + 3600000);
-        kick((c, n) => n === name && c.ip === target.ip && !c.owner, 'You were removed from this room by the owner.');
+        kick((c, n) => n === name && c.ip === target.ip && c.role === 0, 'You were removed from this room by the room staff.');
+        addLog(name, r, 'kick', '', staffName(r, auth.session(req), lv), target.nick);
         res.writeHead(204); res.end();
       } catch { res.writeHead(400); res.end(); }
     });
@@ -588,46 +606,71 @@ async function handle(req, res) {
 
 
   // ---- room tools for the owner of a private room: about text, ban, delete messages, pin, clear ----
-  if (/^\/(room\/(about|manage|ban|unban|clear)|msgdel|pin)$/.test(url.pathname) && req.method === 'POST') {
+  if (/^\/(room\/(about|manage|ban|unban|clear|staff)|msgdel|pin)$/.test(url.pathname) && req.method === 'POST') {
     return readBody(req, 2500, body => {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req), p = url.pathname;
         if (!r || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
         if (toolLimited(ip)) return json(res, 429, { error: 'slow down' });
-        const owner = name.startsWith('p-') && ownsRoom(r, user, m.otok), all = data => r.clients.forEach(c => c.write(`data: ${JSON.stringify(data)}\n\n`));
+        const lv = name.startsWith('p-') ? roleLv(r, user, m.otok) : 0, owner = lv === 3, sn = staffName(r, user, lv), all = data => r.clients.forEach(c => c.write(`data: ${JSON.stringify(data)}\n\n`));
         if (p === '/msgdel') {   // the owner can delete any message, everybody else only their own
           const id = String(m.id || ''), s = sent.get(id), i = r.history.findIndex(x => x.id === id);
           const mine = !!s && s.room === name && s.ip === ip && (!s.acct || (!!user && user.id === s.acct));
-          if (i < 0 || !(owner || mine)) return json(res, 403, { error: 'not allowed' });
+          if (i < 0 || !(lv >= 1 || mine)) return json(res, 403, { error: 'not allowed' });
           const msg = r.history[i]; r.history.splice(i, 1);
+          if (!mine) addLog(name, r, 'msgdel', msg.text || (msg.img ? '[picture]' : msg.aud ? '[voice note]' : ''), sn, msg.nick);
           if (r.pin && r.pin.id === id) { r.pin = null; all({ pin: null }); saveRoom(name); }
           all({ del: id });
           if (msg.img) dropImage(msg.img, true).catch(() => {});
           return json(res, 200, { ok: true });
         }
-        if (!owner) return json(res, 403, { error: 'owner only' });
+        if (lv < 1) return json(res, 403, { error: 'staff only' });
         if (p === '/pin') {
-          if (!m.id) { r.pin = null; } else {
+          if (!m.id) { addLog(name, r, 'unpin', r.pin ? r.pin.text : '', sn, r.pin ? r.pin.nick : ''); r.pin = null; } else {
             const msg = r.history.find(x => x.id === String(m.id));
             if (!msg) return json(res, 404, { error: 'gone' });
             r.pin = { id: msg.id, nick: msg.nick, text: clean(msg.text, 200), ...(msg.img ? { img: msg.img } : {}) };
+            addLog(name, r, 'pin', msg.text || (msg.img ? '[picture]' : msg.aud ? '[voice note]' : ''), sn, msg.nick);
           }
           all({ pin: r.pin }); saveRoom(name); return json(res, 200, { ok: true });
         }
+        if (p === '/room/manage') return json(res, 200, { role: roleName(lv), about: r.about, banned: [...r.banned].map(([key, b]) => ({ key, nick: b.nick, t: b.t })), logs: r.logs, staff: [...r.staff].map(([acct, x]) => ({ acct, role: x.role, nick: x.nick })) });
+        if (p === '/room/staff') {
+          const role = m.role === 'admin' ? 'admin' : m.role === 'mod' ? 'mod' : '';
+          if (role) {   // add: pick someone who is online with a verified account
+            if (lv < (role === 'admin' ? 3 : 2)) return json(res, 403, { error: 'not allowed' });
+            const t = [...r.clients].find(c => c.cid === String(m.cid || ''));
+            if (!t || !t.acct || t.owner) return json(res, 404, { error: 'not found' });
+            if (!r.staff.has(t.acct) && r.staff.size >= 20) return json(res, 400, { error: 'staff list full' });
+            if (r.staff.has(t.acct) && r.staff.get(t.acct).role === 'admin' && lv < 3) return json(res, 403, { error: 'not allowed' });
+            r.banned.delete('a:' + t.acct);
+            r.staff.set(t.acct, { role, nick: t.nick, t: Date.now() });
+            addLog(name, r, 'staff_add', role, sn, t.nick);
+          } else {   // remove: owner removes anybody, admin removes mods, staff can leave
+            const key = String(m.acct || ''), st = r.staff.get(key);
+            if (!st) return json(res, 404, { error: 'not found' });
+            const self = !!user && user.id === key;
+            if (!self && lv < (st.role === 'admin' ? 3 : 2)) return json(res, 403, { error: 'not allowed' });
+            r.staff.delete(key); addLog(name, r, 'staff_remove', st.role, sn, st.nick);
+          }
+          refreshRoles(name, r); return json(res, 200, { ok: true });
+        }
         if (p === '/room/about') {
+          if (lv < 2) return json(res, 403, { error: 'admin only' });
+          addLog(name, r, 'about', '', sn, '');
           r.about = { topic: clean(m.topic, 80), desc: clean(m.desc, 300), rules: clean(m.rules, 500) };
           all({ about: r.about }); saveRoom(name); return json(res, 200, { ok: true });
         }
-        if (p === '/room/manage') return json(res, 200, { about: r.about, banned: [...r.banned].map(([key, b]) => ({ key, nick: b.nick, t: b.t })) });
-        if (p === '/room/clear') { r.history.length = 0; r.pin = null; all({ clear: true }); all({ pin: null }); saveRoom(name); return json(res, 200, { ok: true }); }
-        if (p === '/room/unban') { (Array.isArray(m.keys) ? m.keys : [m.key]).slice(0, 4).forEach(k => r.banned.delete(String(k || ''))); saveRoom(name); return json(res, 200, { ok: true }); }
+        if (p === '/room/clear') { addLog(name, r, 'clear', '', sn, ''); r.history.length = 0; r.pin = null; all({ clear: true }); all({ pin: null }); saveRoom(name); return json(res, 200, { ok: true }); }
+        if (p === '/room/unban') { addLog(name, r, 'unban', '', sn, ''); (Array.isArray(m.keys) ? m.keys : [m.key]).slice(0, 4).forEach(k => r.banned.delete(String(k || ''))); saveRoom(name); return json(res, 200, { ok: true }); }
         if (p === '/room/ban') {
           const target = [...r.clients].find(c => c.cid === String(m.cid || ''));
-          if (!target || target.owner) return json(res, 404, { error: 'not found' });
+          if (!target || target.role > 0) return json(res, 404, { error: 'not found' });
           if (r.banned.size >= 100) return json(res, 400, { error: 'ban list full' });
           const b = { nick: target.nick, t: Date.now() };
           r.banned.set('ip:' + target.ip, b); if (target.acct) r.banned.set('a:' + target.acct, b);
-          kick((c, n) => n === name && !c.owner && (c.ip === target.ip || (target.acct && c.acct === target.acct)), 'You were banned from this room by the owner.');
+          kick((c, n) => n === name && c.role === 0 && (c.ip === target.ip || (target.acct && c.acct === target.acct)), 'You were banned from this room by the room staff.');
+          addLog(name, r, 'ban', '', sn, target.nick);
           saveRoom(name); return json(res, 200, { ok: true });
         }
       } catch { json(res, 400, { error: 'bad request' }); }
@@ -651,11 +694,12 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req);
         if (!r || !name.startsWith('p-') || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
-        if (!ownsRoom(r, user, m.otok)) return json(res, 403, { error: 'owner only' });
+        const lv = roleLv(r, user, m.otok);
+        if (lv < 2) return json(res, 403, { error: 'admin only' });
         if (limited(ip)) return json(res, 429, { error: 'slow down' });
         const c = cleanBg(m, user);
         if (!c.ok) return json(res, c.code, { error: c.error });
-        r.bg = c.bg; saveRoom(name);
+        r.bg = c.bg; addLog(name, r, 'bg', '', staffName(r, user, lv), ''); saveRoom(name);
         const data = `data: ${JSON.stringify({ roombg: r.bg })}\n\n`;
         r.clients.forEach(cl => cl.write(data));
         res.writeHead(204); res.end();
