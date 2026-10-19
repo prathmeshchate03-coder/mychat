@@ -45,7 +45,7 @@ function liveByIid(iid) {
 
 function room(name) {
   // ownerTok: sha256 of the creator's secret (private rooms only). kicked: ip -> expiry time.
-  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', ownerAcct: '', kicked: new Map(), banned: new Map(), about: { topic: '', desc: '', rules: '' }, pin: null, bg: null, staff: new Map(), logs: [], pub: !name.startsWith('p-') });
+  if (!rooms.has(name)) rooms.set(name, { clients: new Set(), history: [], ownerTok: '', ownerAcct: '', kicked: new Map(), banned: new Map(), about: { topic: '', desc: '', rules: '' }, pin: null, bg: null, staff: new Map(), logs: [], rx: new Map(), pub: !name.startsWith('p-') });
   return rooms.get(name);
 }
 // Join/leave notice that also carries the current member list (no IPs, only public info).
@@ -111,7 +111,7 @@ function isKicked(r, ip) {
 }
 function broadcast(name, msg) {
   const r = room(name);
-  if (!msg.system) { r.history.push(msg); if (r.history.length > 50) r.history.shift(); }
+  if (!msg.system) { r.history.push(msg); if (r.history.length > 50) r.rx.delete(r.history.shift().id); }
   const data = `data: ${JSON.stringify(msg)}\n\n`;
   r.clients.forEach(c => c.write(data));
 }
@@ -219,6 +219,9 @@ const images = require('./images')({ db: dbCmd, dbReady: dbOn, session: req => a
 const voice = require('./voice')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
   budgetMB: Number(process.env.VOICE_BUDGET_MB) || 50, ttlDays: 3 });
 const acctIid = id => sha('acct:' + id).slice(0, 16);   // DM identity of an account, the same on every device
+const RX = ['\u{1F44D}', '\u2764\uFE0F', '\u{1F602}', '\u{1F62E}', '\u{1F622}', '\u{1F64F}'];
+const rxCount = votes => { const c = {}; votes.forEach(e => { c[e] = (c[e] || 0) + 1; }); return c; };
+const dmRx = new Map();   // DM message id -> Map(person -> emoji)
 function who(req, body) {   // who is making a DM request: an account (cookie) or a guest (secret code dk)
   const user = auth.session(req);
   return { user, iid: user ? acctIid(user.id) : iidOf(body && body.dk) };
@@ -517,7 +520,10 @@ async function handle(req, res) {
         if (r && (isKicked(r, ip) || roomBanned(r, ip, user)) && roleLv(r, user, m.otok) === 0) { res.writeHead(403); return res.end(); }
         if (limited(ip)) { res.writeHead(429); return res.end('slow down'); }
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
+        let reply = null;   // quoted message: copied from the room's own history, so it cannot be forged
+        if (m.reply && r) { const o = r.history.find(x => x.id === String(m.reply)); if (o) reply = { id: o.id, nick: o.nick, text: clean(o.text, 80) || (o.img ? '[picture]' : o.aud ? '[voice note]' : '') }; }
         const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
+        if (reply) msg.reply = reply;
         if (user) msg.v = true;      // verified account badge
         if (imgId) msg.img = imgId;
         if (audId) { msg.aud = audId; msg.dur = dur; }
@@ -597,12 +603,14 @@ async function handle(req, res) {
         }
         pair.t = now;
         BAD.forEach(w => { text = text.replace(new RegExp(esc(w), 'gi'), '***'); });
+        let reply = null;   // quoted message, copied from the server's own log of this conversation
+        if (m.reply) { const o = dmLog.get(String(m.reply)); if (o && ((o.from === from && o.to === to) || (o.from === to && o.to === from))) reply = { id: String(m.reply), from: o.from, text: clean(o.text, 80) || (o.img ? '[picture]' : o.aud ? '[voice note]' : '') }; }
         const id = crypto.randomUUID().slice(0, 8);
         dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}) });
         if (dmLog.size > 1000) dmLog.delete(dmLog.keys().next().value);
-        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request, ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}), ...(pair.bg ? { bg: pair.bg } : {}) } })}\n\n`;
+        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request, ...(reply ? { reply } : {}), ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}), ...(pair.bg ? { bg: pair.bg } : {}) } })}\n\n`;
         targets.forEach(c => c.write(data));
-        json(res, 200, { id, t: now });
+        json(res, 200, { id, t: now, ...(reply ? { reply } : {}) });
       } catch { json(res, 400, { error: 'bad request' }); }
     });
   }
@@ -620,7 +628,7 @@ async function handle(req, res) {
           const id = String(m.id || ''), s = sent.get(id), i = r.history.findIndex(x => x.id === id);
           const mine = !!s && s.room === name && s.ip === ip && (!s.acct || (!!user && user.id === s.acct));
           if (i < 0 || !(lv >= 1 || mine)) return json(res, 403, { error: 'not allowed' });
-          const msg = r.history[i]; r.history.splice(i, 1);
+          const msg = r.history[i]; r.history.splice(i, 1); r.rx.delete(id);
           if (!mine) addLog(name, r, 'msgdel', msg.text || (msg.img ? '[picture]' : msg.aud ? '[voice note]' : ''), sn, msg.nick);
           if (r.pin && r.pin.id === id) { r.pin = null; all({ pin: null }); saveRoom(name); }
           all({ del: id });
@@ -664,7 +672,7 @@ async function handle(req, res) {
           r.about = { topic: clean(m.topic, 80), desc: clean(m.desc, 300), rules: clean(m.rules, 500) };
           all({ about: r.about }); saveRoom(name); return json(res, 200, { ok: true });
         }
-        if (p === '/room/clear') { addLog(name, r, 'clear', '', sn, ''); r.history.length = 0; r.pin = null; all({ clear: true }); all({ pin: null }); saveRoom(name); return json(res, 200, { ok: true }); }
+        if (p === '/room/clear') { r.rx.clear(); addLog(name, r, 'clear', '', sn, ''); r.history.length = 0; r.pin = null; all({ clear: true }); all({ pin: null }); saveRoom(name); return json(res, 200, { ok: true }); }
         if (p === '/room/unban') { addLog(name, r, 'unban', '', sn, ''); (Array.isArray(m.keys) ? m.keys : [m.key]).slice(0, 4).forEach(k => r.banned.delete(String(k || ''))); saveRoom(name); return json(res, 200, { ok: true }); }
         if (p === '/room/ban') {
           const target = [...r.clients].find(c => c.cid === String(m.cid || ''));
@@ -727,6 +735,45 @@ async function handle(req, res) {
     });
   }
   // The receiver accepts a request, so the sender may keep writing.
+  // ---- reactions: one emoji per person per message, tap the same one again to remove it ----
+  if (url.pathname === '/react' && req.method === 'POST') {
+    return readBody(req, 400, body => {
+      try {
+        const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req), e = String(m.e || '');
+        if (!r || !RX.includes(e) || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
+        if (roleLv(r, user, m.otok) === 0 && (isKicked(r, ip) || roomBanned(r, ip, user))) return json(res, 403, { error: 'not allowed' });
+        if (![...r.clients].some(c => c.ip === ip)) return json(res, 403, { error: 'join the room first' });
+        if (toolLimited(ip)) return json(res, 429, { error: 'slow down' });
+        const id = String(m.id || ''), msg = r.history.find(x => x.id === id);
+        if (!msg) return json(res, 404, { error: 'gone' });
+        const key = user ? 'a' + user.id : 'g' + sha(ip + clean(m.uid, 24)).slice(0, 12), votes = r.rx.get(id) || new Map();
+        if (votes.get(key) === e) votes.delete(key); else votes.set(key, e);
+        r.rx.set(id, votes);
+        const c = rxCount(votes); if (Object.keys(c).length) msg.rx = c; else delete msg.rx;
+        const data = `data: ${JSON.stringify({ rx: { id, c } })}\n\n`;
+        r.clients.forEach(cl => cl.write(data));
+        json(res, 200, { mine: votes.get(key) || '' });
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
+  if (url.pathname === '/dm/react' && req.method === 'POST') {
+    return readBody(req, 500, body => {
+      try {
+        const m = JSON.parse(body), { iid: from } = who(req, m), to = String(m.to || ''), e = String(m.e || ''), id = String(m.id || '');
+        if (!from || !okIid(to) || !RX.includes(e) || isBanned(ip)) return json(res, 400, { error: 'bad request' });
+        if (toolLimited(ip)) return json(res, 429, { error: 'slow down' });
+        const o = dmLog.get(id), pair = dmPairs.get([from, to].sort().join(':'));
+        if (!o || !pair || !pair.accepted || !((o.from === from && o.to === to) || (o.from === to && o.to === from))) return json(res, 404, { error: 'gone' });
+        if (dmBlocks.get(to) && dmBlocks.get(to).has(from)) return json(res, 200, { mine: '' });
+        const votes = dmRx.get(id) || new Map();
+        if (votes.get(from) === e) votes.delete(from); else votes.set(from, e);
+        dmRx.set(id, votes); if (dmRx.size > 2000) dmRx.delete(dmRx.keys().next().value);
+        const c = rxCount(votes), send = (iid, w) => liveByIid(iid).forEach(cl => cl.write(`data: ${JSON.stringify({ dmrx: { id, with: w, c } })}\n\n`));
+        send(from, to); send(to, from);
+        json(res, 200, { mine: votes.get(from) || '' });
+      } catch { json(res, 400, { error: 'bad request' }); }
+    });
+  }
   if (url.pathname === '/dm/accept' && req.method === 'POST') {
     return readBody(req, 500, body => {
       try {

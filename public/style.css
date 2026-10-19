@@ -134,3 +134,17 @@ textarea{background:#26262c;border:1px solid var(--line);color:#eee;border-radiu
 #mic{padding:8px 12px;font-size:18px;line-height:1}.audbox{margin-top:4px}.audbox audio{display:block;width:100%;max-width:240px;height:36px}
 .recdot{color:#ff5a5a;animation:rec 1s infinite}@keyframes rec{50%{opacity:.25}}
 @media(max-width:400px){#mic{padding:8px}}@media(prefers-reduced-motion:reduce){.recdot{animation:none}}
+.logrow{font-size:13px;padding:5px 0;border-bottom:1px solid var(--line,#2a2a30);overflow-wrap:anywhere}
+.logt{color:#8b8b95;margin-right:8px;font-size:12px}
+.quote{border-left:3px solid var(--y);background:rgba(255,255,255,.07);padding:3px 8px;margin:4px 0;border-radius:6px;font-size:12px;color:#c4c4cc;cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:100%}
+.quote b{font-size:12px}
+.m.flash{outline:2px solid var(--y)}
+#replybar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--card);border-top:1px solid var(--line);font-size:13px}
+#replybar[hidden]{display:none}
+#replybar .rtxt{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.rxrow,.rxpick{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.chip{background:#33333b;border:1px solid var(--line);border-radius:12px;padding:1px 8px;font-size:13px;cursor:pointer;color:#eee}
+.chip.mine{border-color:var(--y);background:#4a4100}
+.rxpick .chip{font-size:18px;padding:2px 8px}
+.replybar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--card);border-top:1px solid var(--line);font-size:13px}
+.replybar .rtxt{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}

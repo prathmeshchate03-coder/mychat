@@ -19,6 +19,7 @@
 <div id="typing" aria-live="polite"></div>
 <div id="picprev" hidden></div>
 <div id="emojis" hidden></div>
+<div id="replybar" hidden></div>
 <div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><button id="pic" class="ghost" aria-label="Send a picture">&#128247;</button><button id="mic" class="ghost" aria-label="Record a voice note" hidden>&#127908;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
 <div id="lightbox" hidden role="dialog" aria-label="Picture"><img alt=""></div>
 <input type="file" id="picfile" accept="image/*" hidden><input type="file" id="bgfile" accept="image/*" hidden>
@@ -118,7 +119,7 @@ $('ffg').onsubmit=async e=>{e.preventDefault();authMsg('Sending...',true);
  authMsg(r.ok?'If that email has an account, we sent a link to choose a new password.':(AERR[r.j.error]||'Something went wrong. Try again.'),r.ok)};
 
 function join(name){name=slug(name);if(!name)return;room=name;location.hash=name;$('rname').textContent='#'+name;$('msgs').innerHTML='';
- users=[];me={id:'',owner:false,role:''};applyBg($('msgs'),null);applyAbout(null);applyPin(null);typers.clear();showTyping();$('cnt').hidden=true;closePanels();
+ setReply(null);for(const k in myRx)delete myRx[k];for(const k in rxc)delete rxc[k];users=[];me={id:'',owner:false,role:''};applyBg($('msgs'),null);applyAbout(null);applyPin(null);typers.clear();showTyping();$('cnt').hidden=true;closePanels();
  if(pending&&pending.ctx==='room'&&!pending.busy)clearPending();
  otok=localStorage.getItem('otok:'+name)||'';
  if(es)es.close();
@@ -127,6 +128,8 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
   if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);applyBg($('msgs'),d.bg);applyAbout(d.about);applyPin(d.pin);renderUsers();
    if(Object.keys(dmBlocked).length)dmCall('/dm/block',{add:Object.keys(dmBlocked)}).catch(()=>{})}   // keep the server's block list in step after restarts
   else if(d.typing)onTyping(d);
+  else if(d.rx)onRx(d.rx);
+  else if(d.dmrx)onDmRx(d.dmrx);
   else if(d.dm)onDm(d.dm);
   else if(d.friend)onFriend(d.friend);
   else if(d.del)document.querySelectorAll('#msgs .m').forEach(x=>{if(x.dataset.mid===d.del)x.remove()});
@@ -144,6 +147,21 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
  $('side').classList.remove('open')}
 function notice(t){const d=el('div',t,'sys');$('msgs').append(d);$('msgs').scrollTop=$('msgs').scrollHeight}
 
+const RXE=['\u{1F44D}','\u2764\uFE0F','\u{1F602}','\u{1F62E}','\u{1F622}','\u{1F64F}'],myRx={},rxc={};
+function rxRender(d,c,mineE,tap){const old=d.querySelector(':scope>.rxrow');if(old)old.remove();const ks=Object.keys(c||{});if(!ks.length)return;
+ const r=el('div','','rxrow');ks.forEach(e=>{const b=el('button',e+' '+c[e],'chip'+(mineE===e?' mine':''));b.type='button';b.onclick=()=>tap(e);r.append(b)});d.append(r)}
+function rxPicker(d,tap){const old=d.querySelector(':scope>.rxpick');if(old){old.remove();return}
+ const p=el('div','','rxpick');RXE.forEach(e=>{const b=el('button',e,'chip');b.type='button';b.setAttribute('aria-label','React '+e);b.onclick=()=>{p.remove();tap(e)};p.append(b)});d.append(p)}
+const msgEl=id=>[...document.querySelectorAll('#msgs .m')].find(x=>x.dataset.mid===id);
+async function reactRoom(id,e){const r=await fetch('/react',{method:'POST',body:JSON.stringify({room,otok,uid,id,e})}).catch(()=>null);
+ if(r&&r.ok){const j=await r.json().catch(()=>({}));myRx[id]=j.mine;const d=msgEl(id);if(d)rxRender(d,rxc[id],myRx[id],x=>reactRoom(id,x))}else notice('Could not react.')}
+function onRx(x){rxc[x.id]=x.c;const d=msgEl(x.id);if(d)rxRender(d,x.c,myRx[x.id],e=>reactRoom(x.id,e))}
+function onDmRx(x){const t=threads.get(x.with);if(!t)return;const m=t.msgs.find(y=>y.id===x.id);if(m){m.rx=x.c;renderDms()}}
+function reactDm(t,m,e){m.pick=false;dmCall('/dm/react',{to:t.iid,id:m.id,e}).then(async r=>{if(r.ok){const j=await r.json().catch(()=>({}));m.myrx=j.mine}else dmNote('Could not react.');renderDms()}).catch(()=>{})}
+let replyTo=null,dmReply=null;
+function setReply(m){replyTo=m?{id:m.id,nick:m.nick,text:m.text||(isImgId(m.img)?'[picture]':isImgId(m.aud)?'[voice note]':'')}:null;const b=$('replybar');b.innerHTML='';
+ if(!replyTo){b.hidden=true;return}b.hidden=false;const t=el('span','','rtxt');t.append(el('b','Replying to '+replyTo.nick+': '),document.createTextNode(replyTo.text.slice(0,60)));
+ const x=el('button','\u2715','ghost sm');x.setAttribute('aria-label','Cancel reply');x.onclick=()=>setReply(null);b.append(t,x);$('text').focus()}
 function add(m){const box=$('msgs');
  if(m.system){const d=el('div',m.text,'sys');
   if(m.users){users=m.users;renderUsers()}
@@ -153,14 +171,18 @@ function add(m){const box=$('msgs');
  const b=el('b',m.nick);if(m.v)b.append(tick());d.append(b);
  if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
  if(!mine&&m.v&&soc()&&idOfUid(m.uid)&&!fr.friends.some(f=>f.uid===m.uid)){const fl=el('a','+friend');fl.tabIndex=0;fl.setAttribute('role','button');fl.onclick=()=>{friendAct('request',idOfUid(m.uid));fl.remove()};d.append(fl)}
+ const ra=el('a','react');ra.tabIndex=0;ra.setAttribute('role','button');ra.onclick=()=>rxPicker(d,e=>reactRoom(m.id,e));
+ const rl=el('a','reply');rl.tabIndex=0;rl.setAttribute('role','button');rl.onclick=()=>setReply(m);
  const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
  rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
- d.append(rp);d.dataset.mid=m.id;
+ d.append(ra,rl,rp);d.dataset.mid=m.id;
  if(mine||me.role){const dl=el('a','delete');dl.tabIndex=0;dl.setAttribute('role','button');dl.onclick=()=>rpost('/msgdel',{id:m.id});d.append(dl)}
  if(me.role){const pn=el('a','pin');pn.tabIndex=0;pn.setAttribute('role','button');pn.onclick=()=>rpost('/pin',{id:m.id});d.append(pn)}
+ if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.nick),document.createTextNode(' '+m.reply.text));q.onclick=()=>{const t=[...document.querySelectorAll('#msgs .m')].find(x=>x.dataset.mid===m.reply.id);if(t){t.scrollIntoView({block:'center'});t.classList.add('flash');setTimeout(()=>t.classList.remove('flash'),1200)}};d.append(q)}
  if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
  if(isImgId(m.aud))d.append(audBox(m.aud,mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
  if(m.text)d.append(el('div',m.text));
+ if(m.rx){rxc[m.id]=m.rx;rxRender(d,m.rx,myRx[m.id],e=>reactRoom(m.id,e))}
  box.append(d);box.scrollTop=box.scrollHeight}
 
 // ---- pictures: choose, shrink, preview, send, view, delete ----
@@ -235,11 +257,11 @@ async function sendPicture(){
    if(r.status===401)return openAuth('in','Please log in again to send pictures.');
    return say(r.status===429?'Too many pictures. Wait a minute and try again.':r.status===413?'That picture is too big.':j.error==='full'?'Picture storage is full right now. Try again later.':r.status===403?'You cannot send pictures right now.':'Could not upload the picture. Try again.')}
   id=j.id;const att=aud?{aud:id,dur:p.dur}:{img:id};
-  if(p.ctx==='room'){const text=$('text').value.trim(),r2=await fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text,...att})});
-   if(!r2.ok)throw r2.status;$('text').value=''}
-  else{const t=thread(p.ctx),inp=$('dmtext'),text=inp?inp.value.trim():'',r2=await dmCall('/dm',{to:p.ctx,text,...att});
+  if(p.ctx==='room'){const text=$('text').value.trim(),r2=await fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text,...att,reply:replyTo?replyTo.id:undefined})});
+   if(!r2.ok)throw r2.status;$('text').value='';setReply(null)}
+  else{const t=thread(p.ctx),inp=$('dmtext'),text=inp?inp.value.trim():'',r2=await dmCall('/dm',{to:p.ctx,text,...att,reply:dmReply&&dmReply.iid===p.ctx?dmReply.id:undefined});
    if(!r2.ok)throw r2.status;const j2=await r2.json().catch(()=>({}));
-   t.msgs.push({id:j2.id||'',mine:true,text,...att,t:j2.t||Date.now()});t.request=false;if(inp)inp.value=''}
+   t.msgs.push({id:j2.id||'',mine:true,reply:j2.reply?{id:j2.reply.id,text:j2.reply.text,mine:j2.reply.from===me.iid}:undefined,text,...att,t:j2.t||Date.now()});t.request=false;dmReply=null;if(inp)inp.value=''}
   clearPending()
  }catch(st){
   if(id)fetch(p.kind==='audio'?'/vn/delete':'/img/delete',{method:'POST',body:JSON.stringify({id})}).catch(()=>{});   // it never reached anyone, so remove the upload again
@@ -435,7 +457,7 @@ const dmCall=(path,body)=>fetch(path,{method:'POST',body:JSON.stringify({dk,...b
 function thread(iid,name,v){let t=threads.get(iid);if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false,v:false};threads.set(iid,t)}if(name)t.nick=name;if(v!==undefined)t.v=!!v;return t}
 function updateBadge(){let n=0;threads.forEach(t=>n+=t.unread);n+=fr.incoming.length;const b=$('dmbadge');b.hidden=!n;b.textContent=n}
 function onDm(m){if(dmBlocked[m.from])return;const t=thread(m.from,m.nick,m.v),first=!t.msgs.length;
- t.msgs.push({id:m.id,mine:false,text:m.text,img:isImgId(m.img)?m.img:'',aud:isImgId(m.aud)?m.aud:'',dur:m.dur,t:m.t});if(first&&m.request)t.request=true;if(m.bg)t.bg=m.bg;
+ t.msgs.push({id:m.id,mine:false,reply:m.reply?{id:m.reply.id,text:m.reply.text,mine:m.reply.from===me.iid}:undefined,text:m.text,img:isImgId(m.img)?m.img:'',aud:isImgId(m.aud)?m.aud:'',dur:m.dur,t:m.t});if(first&&m.request)t.request=true;if(m.bg)t.bg=m.bg;
  if($('dms').hidden||curThread!==m.from){t.unread++;if(first)notice('Private message from '+t.nick+'. Open Messages to read it.')}
  updateBadge();renderDms()}
 function showDms(iid){closePanels();$('dms').hidden=false;$('dmbtn').setAttribute('aria-expanded','true');curThread=iid||'';
@@ -465,26 +487,34 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
  if(!t.msgs.length)body.append(el('p','Say hello to '+t.nick+'. They have to accept your first message before you can send more.','mut'));
  t.msgs.forEach(m=>{const d=el('div','','m'+(m.mine?' me':''));d.append(el('b',m.mine?'You':t.nick));
   if(!m.mine){const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');rp.onclick=()=>{dmCall('/report',{id:m.id});rp.textContent='reported'};d.append(rp)}
+  if(m.id){const ra=el('a','react');ra.tabIndex=0;ra.setAttribute('role','button');ra.onclick=()=>{m.pick=!m.pick;renderDms()};
+   const rl=el('a','reply');rl.tabIndex=0;rl.setAttribute('role','button');rl.onclick=()=>{dmReply={iid:t.iid,id:m.id,mine:m.mine,text:m.text||(m.aud||m.audGone?'[voice note]':m.img||m.gone?'[picture]':'')};renderDms()};d.append(ra,rl)}
+  if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.mine?'You':t.nick),document.createTextNode(' '+m.reply.text));d.append(q)}
   if(isImgId(m.img))d.append(imgBox(m.img,m.mine,t.nick));else if(m.gone)d.append(el('div','Picture deleted','imggone'));
   if(isImgId(m.aud))d.append(audBox(m.aud,m.mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
-  if(m.text)d.append(el('div',m.text));body.append(d)});
+  if(m.text)d.append(el('div',m.text));
+  if(m.rx)rxRender(d,m.rx,m.myrx,e=>reactDm(t,m,e));
+  if(m.pick){const pk=el('div','','rxpick');RXE.forEach(e=>{const b=el('button',e,'chip');b.type='button';b.onclick=()=>reactDm(t,m,e);pk.append(b)});d.append(pk)}
+  body.append(d)});
  const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
  if(t.request){const bar=el('div','','dmreq'),ac=el('button','Accept','sm');bar.append(el('span',t.nick+' wants to message you.'));
   ac.onclick=()=>{t.request=false;dmCall('/dm/accept',{from:t.iid});renderDms()};bar.append(ac);body.append(bar)}
  if(waiting)body.append(el('p','Waiting for '+t.nick+' to accept your message.','mut'));
  const pb=pendingBar(curThread);if(pb)p.append(pb);
+ let rb=null;if(dmReply&&dmReply.iid===t.iid&&!waiting){rb=el('div','','replybar');const tx=el('span','','rtxt');tx.append(el('b','Replying to '+(dmReply.mine?'yourself':t.nick)+': '),document.createTextNode(dmReply.text.slice(0,60)));const x=el('button','\u2715','ghost sm');x.setAttribute('aria-label','Cancel reply');x.onclick=()=>{dmReply=null;renderDms()};rb.append(tx,x)}
  const f=el('div','','dmform'),at=el('button','📷','ghost'),inp=el('input'),sb=el('button','Send');
  at.setAttribute('aria-label','Send a picture');at.id='dmpic';at.onclick=()=>pickPicture(t.iid);
  const mic=el('button','\uD83C\uDF99','ghost');mic.id='dmmic';mic.setAttribute('aria-label','Record a voice note');mic.onclick=()=>recordVoice(t.iid);
  inp.type='text';inp.id='dmtext';inp.maxLength=500;inp.placeholder='Private message';inp.autocomplete='off';inp.setAttribute('aria-label','Private message');inp.value=keep;
  sb.onclick=()=>sendDm(t,inp);inp.onkeydown=e=>{if(e.key==='Enter')sendDm(t,inp)};
  if(waiting){inp.disabled=true;sb.disabled=true;at.disabled=true;mic.disabled=true}
- f.append(at);if(feat.voice)f.append(mic);f.append(inp,sb);p.insertBefore(h,p.firstChild);p.insertBefore(body,pb||null);p.append(f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
+ f.append(at);if(feat.voice)f.append(mic);f.append(inp,sb);p.insertBefore(h,p.firstChild);p.insertBefore(body,pb||null);if(rb)p.append(rb);p.append(f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
 function dmNote(text){const b=$('dmmsgs');if(b){b.append(el('p',text,'dmerr'));b.scrollTop=b.scrollHeight}else notice(text)}
 function sendDm(t,inp){if(pending&&pending.ctx===t.iid)return sendPicture();
  const text=inp.value.trim();if(!text)return;inp.value='';
- dmCall('/dm',{to:t.iid,text}).then(async r=>{
-  if(r.ok){const j=await r.json().catch(()=>({}));t.msgs.push({id:j.id||'',mine:true,text,t:j.t||Date.now()});t.request=false;renderDms();return}
+ const rid=dmReply&&dmReply.iid===t.iid?dmReply.id:undefined;
+ dmCall('/dm',{to:t.iid,text,reply:rid}).then(async r=>{
+  if(r.ok){const j=await r.json().catch(()=>({}));t.msgs.push({id:j.id||'',mine:true,reply:j.reply?{id:j.reply.id,text:j.reply.text,mine:j.reply.from===me.iid}:undefined,text,t:j.t||Date.now()});t.request=false;dmReply=null;renderDms();return}
   inp.value=text;
   dmNote(r.status===404?t.nick+' is not online right now.':r.status===409?'Wait for '+t.nick+' to accept your first message.':r.status===429?'Slow down a little.':'This message could not be sent.')
  }).catch(()=>{inp.value=text;dmNote('Network problem. Try again.')})}
@@ -513,7 +543,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('lightbox').h
 
 function send(){if(pending&&pending.ctx==='room')return sendPicture();
  const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;
- fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text:t})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned, removed or room closed).')})}
+ const rid=replyTo?replyTo.id:undefined;setReply(null);
+ fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,text:t,reply:rid})}).then(r=>{if(r.status==429)notice('Slow down a little');else if(r.status==403)notice('You cannot send messages here (banned, removed or room closed).')})}
 $('send').onclick=send;$('text').onkeydown=e=>{if(e.key==='Enter')send()};
 $('joinbtn').onclick=()=>{join($('newroom').value);$('newroom').value=''};
 $('priv').onclick=()=>{const a=crypto.getRandomValues(new Uint8Array(6)),name='p-'+[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
