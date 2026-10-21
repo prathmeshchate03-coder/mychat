@@ -441,7 +441,7 @@ function friendsSection(body){
 
 
 
-// ---- voice notes: record (max 30 s), preview, send, play, delete ----
+// ---- voice notes: record (max set by the server, default 2 min), preview, send, play, delete ----
 let rec=null,recTimer=0;
 const fmtDur=n=>Math.floor(n/60)+':'+String(n%60).padStart(2,'0');
 async function recordVoice(ctx){
@@ -457,11 +457,11 @@ async function recordVoice(ctx){
  mr.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
  mr.onstop=()=>{st.getTracks().forEach(t=>t.stop());clearInterval(recTimer);const r=rec;rec=null;
   if(!r||r.cancel||!chunks.length){showPending();return}
-  const dur=Math.max(1,Math.min(30,Math.round((Date.now()-t0)/1000))),blob=new Blob(chunks,{type:(mr.mimeType||mt||'audio/webm').split(';')[0]});
-  if(blob.size>155*1024){showPending();return say('That recording is too big. Keep it under 30 seconds.')}
+  const MS=feat.voiceSec||30,dur=Math.max(1,Math.min(MS,Math.round((Date.now()-t0)/1000))),blob=new Blob(chunks,{type:(mr.mimeType||mt||'audio/webm').split(';')[0]});
+  if(blob.size>MS*4000+18*1024){showPending();return say('That recording is too big. Keep it under '+fmtDur(MS)+'.')}
   pending={blob,url:URL.createObjectURL(blob),ctx,busy:false,kind:'audio',dur};showPending()};
  mr.start();showPending();
- recTimer=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000),e=document.getElementById('rectime');if(e)e.textContent='Recording '+fmtDur(s);if(s>=30)stopRec()},300)}
+ recTimer=setInterval(()=>{const s=Math.round((Date.now()-t0)/1000),e=document.getElementById('rectime');if(e)e.textContent='Recording '+fmtDur(s);if(s>=(feat.voiceSec||30))stopRec()},300)}
 function stopRec(){if(rec&&rec.mr.state!=='inactive')rec.mr.stop()}
 function cancelRec(){if(rec){rec.cancel=true;stopRec()}}
 $('mic').onclick=()=>recordVoice('room');
