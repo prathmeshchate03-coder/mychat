@@ -35,8 +35,43 @@ function stripJpeg(b) {
   return null;
 }
 
+// Stickers are PNG or WebP (they can be see-through). Same idea as above: keep only what is needed to draw the picture.
+function stripPng(b) {
+  const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (!b || b.length < 60 || !b.subarray(0, 8).equals(SIG)) return null;
+  const out = [SIG]; let i = 8, first = true, idat = false;
+  while (i + 12 <= b.length) {
+    const len = b.readUInt32BE(i), type = b.toString('latin1', i + 4, i + 8), end = i + 12 + len;
+    if (len > 0x7fffffff || end > b.length) return null;
+    if (first) { if (type !== 'IHDR' || len !== 13) return null; const w = b.readUInt32BE(i + 8), h = b.readUInt32BE(i + 12); if (w < 16 || h < 16 || w > 512 || h > 512) return null; first = false; }
+    if (type === 'IHDR' || type === 'PLTE' || type === 'tRNS' || type === 'IDAT' || type === 'IEND') out.push(b.subarray(i, end));
+    if (type === 'IDAT') idat = true;
+    if (type === 'IEND') return idat ? Buffer.concat(out) : null;
+    i = end;
+  }
+  return null;
+}
+function stripWebp(b) {
+  if (!b || b.length < 30 || b.toString('latin1', 0, 4) !== 'RIFF' || b.toString('latin1', 8, 12) !== 'WEBP') return null;
+  const total = b.readUInt32LE(4) + 8; if (total > b.length) return null;
+  const chunks = []; let i = 12, image = false;
+  while (i + 8 <= total) {
+    const type = b.toString('latin1', i, i + 4), len = b.readUInt32LE(i + 4), end = i + 8 + len + (len & 1);
+    if (end > total + 1 || i + 8 + len > total) return null;
+    if (type === 'ANIM' || type === 'ANMF') return null;               // no animations
+    if (type === 'VP8 ' || type === 'VP8L' || type === 'ALPH') { chunks.push(b.subarray(i, end)); if (type !== 'ALPH') image = true; }
+    else if (type === 'VP8X' && len === 10) { const c = Buffer.from(b.subarray(i, i + 18)); c[8] &= ~(0x20 | 0x08 | 0x04 | 0x02); chunks.push(c); }   // flags: no ICC, EXIF, XMP, animation
+    i = end;
+  }
+  if (!image) return null;
+  const body = Buffer.concat(chunks), head = Buffer.alloc(12);
+  head.write('RIFF', 0, 'latin1'); head.writeUInt32LE(body.length + 4, 4); head.write('WEBP', 8, 'latin1');
+  return Buffer.concat([head, body]);
+}
+const kindOf = b => b[0] === 0x89 ? 'image/png' : b[0] === 0x52 ? 'image/webp' : 'image/jpeg';
+
 module.exports = function createImages({ db, dbReady, session, isBanned, budgetMB, ttlDays }) {
-  const MAX = 300 * 1024, TTL = (ttlDays || 7) * 86400, BUDGET = (budgetMB || 200) * 1048576, EVIDENCE_TTL = 14 * 86400;
+  const MAX = 300 * 1024, STK_MAX = 150 * 1024, TTL = (ttlDays || 7) * 86400, BUDGET = (budgetMB || 200) * 1048576, EVIDENCE_TTL = 14 * 86400;
   const cache = new Map(); let cacheBytes = 0; const CACHE_MAX = 24 * 1024 * 1024;   // recently viewed pictures stay in memory
   const owner = new Map();    // image id -> { u: account id, t }  so /send can check that the sender uploaded the picture
   const gone = new Set();     // removed (by the sender or a moderator)
@@ -71,23 +106,31 @@ module.exports = function createImages({ db, dbReady, session, isBanned, budgetM
   }
 
   // POST /img with the JPEG as the request body
-  function upload(req, res, ip, json, readBuf) {
+  function upload(req, res, ip, json, readBuf, sticker) {   // sticker: true for POST /st (PNG or WebP), false for POST /img (JPEG)
     const user = session(req);
     if (!user) return json(res, 401, { error: 'login' });
     if (isBanned(ip)) return json(res, 403, { error: 'banned' });
     if (!dbReady()) return json(res, 503, { error: 'unavailable' });
-    if (Number(req.headers['content-length'] || 0) > MAX) { res.setHeader('Connection', 'close'); return json(res, 413, { error: 'too_big' }); }
+    const LIM = sticker ? STK_MAX : MAX;
+    if (Number(req.headers['content-length'] || 0) > LIM) { res.setHeader('Connection', 'close'); return json(res, 413, { error: 'too_big' }); }
     if (limited('m:' + user.id, 6, 60000) || limited('d:' + user.id, 40, 86400000)) return json(res, 429, { error: 'rate' });
-    readBuf(req, res, MAX, async raw => {
+    readBuf(req, res, LIM, async raw => {
       try {
-        if (!raw || raw.length < 1000 || raw[0] !== 0xff || raw[1] !== 0xd8 || raw[2] !== 0xff) return json(res, 400, { error: 'bad_image' });
-        const buf = stripJpeg(raw);                                      // metadata and trailing data are removed here
-        if (!buf || !shape(buf, 200)) return json(res, 400, { error: 'bad_image' });
+        let buf;
+        if (sticker) {
+          if (!raw || raw.length < 100) return json(res, 400, { error: 'bad_image' });
+          buf = raw[0] === 0x89 ? stripPng(raw) : raw[0] === 0x52 ? stripWebp(raw) : null;
+          if (!buf) return json(res, 400, { error: 'bad_image' });
+        } else {
+          if (!raw || raw.length < 1000 || raw[0] !== 0xff || raw[1] !== 0xd8 || raw[2] !== 0xff) return json(res, 400, { error: 'bad_image' });
+          buf = stripJpeg(raw);                                          // metadata and trailing data are removed here
+          if (!buf || !shape(buf, 200)) return json(res, 400, { error: 'bad_image' });
+        }
         if ((await usedBytes()) + buf.length > BUDGET) { lastErr = 'image storage budget is full'; return json(res, 503, { error: 'full' }); }
         const id = crypto.randomBytes(16).toString('hex');
         await db(['SET', 'jc:img:' + id, JSON.stringify({ u: user.id, n: user.name, ip, t: Date.now(), d: buf.toString('base64') }), 'EX', TTL], 25000);
         await db(['SET', 'jc:imm:' + id, user.id, 'EX', TTL]);           // small ownership note, so the sender can delete it even after a restart
-        owner.set(id, { u: user.id, t: Date.now() }); remember(id, buf); added += buf.length; lastErr = '';
+        owner.set(id, { u: user.id, t: Date.now(), s: !!sticker }); remember(id, buf); added += buf.length; lastErr = '';
         db(['INCRBY', dayKey(Date.now()), buf.length]).then(() => db(['EXPIRE', dayKey(Date.now()), 8 * 86400])).catch(() => {});
         db(['SADD', 'jc:iu:' + user.id, id]).then(() => db(['EXPIRE', 'jc:iu:' + user.id, 8 * 86400])).catch(() => {});   // list per account, for bans
         json(res, 200, { id });
@@ -106,7 +149,7 @@ module.exports = function createImages({ db, dbReady, session, isBanned, budgetM
       if (!raw) return notFound();
       buf = Buffer.from(JSON.parse(raw).d, 'base64'); remember(id, buf);
     }
-    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=300',
+    res.writeHead(200, { 'Content-Type': kindOf(buf), 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=300',
       'Content-Security-Policy': "default-src 'none'; sandbox", 'Cross-Origin-Resource-Policy': 'same-origin', 'X-Robots-Tag': 'noindex' });
     res.end(buf);
   }
@@ -118,6 +161,7 @@ module.exports = function createImages({ db, dbReady, session, isBanned, budgetM
     if (!dbReady()) return '';
     return String((await db(['GET', 'jc:imm:' + id])) || '');
   }
+  const isSticker = id => { const o = owner.get(String(id)); return !!o && !!o.s; };
   const deleteLimited = uid => limited('x:' + uid, 30, 60000);
 
   // A picture was reported: keep a copy for moderators for 14 days, even if the sender deletes it afterwards.
@@ -154,5 +198,5 @@ module.exports = function createImages({ db, dbReady, session, isBanned, budgetM
     for (const [k, a] of rate) if (!a.some(t => n - t < 86400000)) rate.delete(k);
   }, 600000).unref();
 
-  return { upload, serve, read, remove, keep, ownerOf, idsByUser, deleteLimited, owns, status, stripJpeg };
+  return { upload, serve, read, remove, keep, ownerOf, idsByUser, deleteLimited, owns, isSticker, kindOf, status, stripJpeg };
 };

@@ -219,6 +219,7 @@ const images = require('./images')({ db: dbCmd, dbReady: dbOn, session: req => a
 const voice = require('./voice')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
   budgetMB: Number(process.env.VOICE_BUDGET_MB) || 50, ttlDays: 3 });
 const acctIid = id => sha('acct:' + id).slice(0, 16);   // DM identity of an account, the same on every device
+const STK_COUNT = 24;   // built-in stickers b00..b23 (drawn in the browser)
 const RX = ['\u{1F44D}', '\u2764\uFE0F', '\u{1F602}', '\u{1F62E}', '\u{1F622}', '\u{1F64F}'];
 const rxCount = votes => { const c = {}; votes.forEach(e => { c[e] = (c[e] || 0) + 1; }); return c; };
 const dmRx = new Map();   // DM message id -> Map(person -> emoji)
@@ -337,6 +338,10 @@ async function handle(req, res) {
     if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
     return images.upload(req, res, ip, json, readBuf);
   }
+  if (url.pathname === '/st' && req.method === 'POST') {   // custom sticker (PNG or WebP), accounts only, same storage and rules as pictures
+    if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
+    return images.upload(req, res, ip, json, readBuf, true);
+  }
   // The sender deletes their own picture (in a room or in a private chat). It disappears for everybody at once.
   if (url.pathname === '/img/delete' && req.method === 'POST') {
     if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
@@ -417,7 +422,7 @@ async function handle(req, res) {
     if (!/^[a-f0-9]{32}$/.test(id)) return json(res, 400, { error: 'bad id' });
     const img = await images.read(id).catch(() => null);
     if (!img) return json(res, 404, { error: 'gone' });
-    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
+    res.writeHead(200, { 'Content-Type': images.kindOf(img.buf), 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; sandbox" });
     return res.end(img.buf);
   }
   if (url.pathname === '/admin/api/action' && req.method === 'POST') {
@@ -509,8 +514,10 @@ async function handle(req, res) {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), user = auth.session(req);
         let text = clean(m.text, 500), nick = clean(m.nick, 20);
         const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(30, Math.round(Number(m.dur) || 1)));
+        const stkB = /^b\d{2}$/.test(String(m.stk || '')) && Number(String(m.stk).slice(1)) < STK_COUNT ? String(m.stk) : '';   // built-in sticker
+        if (stkB) text = '';
         if (user) nick = user.name;
-        if (!okRoom(name) || (!text && !imgId && !audId) || (imgId && audId) || !nick) { res.writeHead(400); return res.end(); }
+        if (!okRoom(name) || (!text && !imgId && !audId && !stkB) || (imgId && audId) || (stkB && (imgId || audId)) || !nick) { res.writeHead(400); return res.end(); }
         if ((imgId || audId) && !user) return json(res, 403, { error: 'login' });                       // only accounts may send pictures and voice notes
         if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });   // and only ones they uploaded themselves
         if (audId && !voice.owns(audId, user.id)) return json(res, 400, { error: 'bad_audio' });
@@ -525,7 +532,8 @@ async function handle(req, res) {
         const msg = { id: crypto.randomUUID().slice(0, 8), nick, uid: user ? 'a' + user.id : clean(m.uid, 24).replace(/[^a-zA-Z0-9]/g, ''), text, t: Date.now() };
         if (reply) msg.reply = reply;
         if (user) msg.v = true;      // verified account badge
-        if (imgId) msg.img = imgId;
+        if (imgId) { msg.img = imgId; if (images.isSticker(imgId)) { msg.stk = 'c'; msg.text = ''; text = ''; } }
+        if (stkB) msg.stk = stkB;
         if (audId) { msg.aud = audId; msg.dur = dur; }
         sent.set(msg.id, { ip, room: name, nick, text, t: msg.t, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId } : {}) });   // ip stays server-side, never broadcast
         if (sent.size > 3000) sent.delete(sent.keys().next().value);
@@ -575,7 +583,9 @@ async function handle(req, res) {
         const m = JSON.parse(body), { user, iid: from } = who(req, m), to = String(m.to || '');
         let text = clean(m.text, 500);
         const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(30, Math.round(Number(m.dur) || 1)));
-        if (!from || !okIid(to) || to === from || (!text && !imgId && !audId) || (imgId && audId)) return json(res, 400, { error: 'bad request' });
+        const stkB = /^b\d{2}$/.test(String(m.stk || '')) && Number(String(m.stk).slice(1)) < STK_COUNT ? String(m.stk) : '';
+        if (stkB) text = '';
+        if (!from || !okIid(to) || to === from || (!text && !imgId && !audId && !stkB) || (imgId && audId) || (stkB && (imgId || audId))) return json(res, 400, { error: 'bad request' });
         if ((imgId || audId) && !user) return json(res, 403, { error: 'login' });
         if (imgId && !images.owns(imgId, user.id)) return json(res, 400, { error: 'bad_image' });
         if (audId && !voice.owns(audId, user.id)) return json(res, 400, { error: 'bad_audio' });
@@ -606,9 +616,10 @@ async function handle(req, res) {
         let reply = null;   // quoted message, copied from the server's own log of this conversation
         if (m.reply) { const o = dmLog.get(String(m.reply)); if (o && ((o.from === from && o.to === to) || (o.from === to && o.to === from))) reply = { id: String(m.reply), from: o.from, text: clean(o.text, 80) || (o.img ? '[picture]' : o.aud ? '[voice note]' : '') }; }
         const id = crypto.randomUUID().slice(0, 8);
-        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text, t: now, ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}) });
+        const stk = stkB || (imgId && images.isSticker(imgId) ? 'c' : '');
+        dmLog.set(id, { ip, from, to, fromNick: mine[0].nick, toNick: targets[0].nick, text: stk ? '' : text, t: now, ...(stk ? { stk } : {}), ...(user ? { acct: user.id } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}) });
         if (dmLog.size > 1000) dmLog.delete(dmLog.keys().next().value);
-        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text, t: now, request, ...(reply ? { reply } : {}), ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}), ...(pair.bg ? { bg: pair.bg } : {}) } })}\n\n`;
+        const data = `data: ${JSON.stringify({ dm: { id, from, nick: mine[0].nick, text: stk ? '' : text, t: now, request, ...(stk ? { stk } : {}), ...(reply ? { reply } : {}), ...(user ? { v: true } : {}), ...(imgId ? { img: imgId } : {}), ...(audId ? { aud: audId, dur } : {}), ...(pair.bg ? { bg: pair.bg } : {}) } })}\n\n`;
         targets.forEach(c => c.write(data));
         json(res, 200, { id, t: now, ...(reply ? { reply } : {}) });
       } catch { json(res, 400, { error: 'bad request' }); }

@@ -20,10 +20,11 @@
 <div id="picprev" hidden></div>
 <div id="emojis" hidden></div>
 <div id="replybar" hidden></div>
-<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><button id="pic" class="ghost" aria-label="Send a picture">&#128247;</button><button id="mic" class="ghost" aria-label="Record a voice note" hidden>&#127908;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><button id="pic" class="ghost" aria-label="Send a picture">&#128247;</button><button id="stkb" class="ghost" aria-label="Stickers">&#127991;</button><button id="mic" class="ghost" aria-label="Record a voice note" hidden>&#127908;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
 <div id="lightbox" hidden role="dialog" aria-label="Picture"><img alt=""></div>
 <input type="file" id="picfile" accept="image/*" hidden><input type="file" id="bgfile" accept="image/*" hidden>
 <div id="aboutm" class="modal" hidden role="dialog" aria-modal="true" aria-label="About this room"><div class="box"><div class="dmhead"><b>About this room</b><button type="button" id="aboutx" class="ghost sm">Close</button></div><div id="aboutbody"></div></div></div>
+<div id="stkm" class="modal" hidden role="dialog" aria-modal="true" aria-label="Stickers"><div class="box"><div class="dmhead"><b>Stickers</b><button type="button" id="stkx" class="ghost sm">Close</button></div><div id="stkbody"></div></div></div>
 <div id="managem" class="modal" hidden role="dialog" aria-modal="true" aria-label="Manage room"><div class="box"><div class="dmhead"><b>Manage room</b><button type="button" id="managex" class="ghost sm">Close</button></div>
 <div class="authbody"><input type="text" id="mt" class="adm" maxlength="80" placeholder="Topic" aria-label="Topic"><textarea id="md" class="adm" maxlength="300" rows="3" placeholder="Description" aria-label="Description"></textarea><textarea id="mr" class="adm" maxlength="500" rows="4" placeholder="Rules" aria-label="Rules"></textarea>
 <button type="button" id="msave" class="adm">Save</button><button type="button" id="mbg" class="ghost adm">Change background</button><button type="button" id="mclear" class="ghost">Clear all messages</button>
@@ -159,6 +160,70 @@ function onRx(x){rxc[x.id]=x.c;const d=msgEl(x.id);if(d)rxRender(d,x.c,myRx[x.id
 function onDmRx(x){const t=threads.get(x.with);if(!t)return;const m=t.msgs.find(y=>y.id===x.id);if(m){m.rx=x.c;renderDms()}}
 function reactDm(t,m,e){m.pick=false;dmCall('/dm/react',{to:t.iid,id:m.id,e}).then(async r=>{if(r.ok){const j=await r.json().catch(()=>({}));m.myrx=j.mine}else dmNote('Could not react.');renderDms()}).catch(()=>{})}
 let replyTo=null,dmReply=null;
+// ---- stickers: 24 built-in ones (drawn here, nothing stored) and your own (made from a photo, accounts only) ----
+const STK=[['\u{1F602}','LOL','#ffd60a'],['\u{1F60D}','LOVE','#ff5a8a'],['\u{1F44D}','OK','#34c759'],['\u{1F62D}','SAD','#5ac8fa'],['\u{1F621}','GRR','#ff453a'],['\u{1F389}','YAY','#bf5af2'],
+ ['\u{1F64F}','PLS','#ff9f0a'],['\u{1F525}','LIT','#ff6a00'],['\u{1F634}','ZZZ','#6e7bff'],['\u{1F914}','HMM','#8e8e93'],['\u{1F60E}','COOL','#30b0c7'],['\u{1F973}','PARTY','#ff2d9b'],
+ ['\u{1F494}','OUCH','#c0392b'],['\u{1F91D}','DEAL','#2ecc71'],['\u{1F44B}','HI','#ffcc00'],['\u{1F440}','LOOK','#7d5fff'],['\u{1F4AF}','100','#ff3b30'],['\u{1F631}','OMG','#af52de'],
+ ['\u{1F923}','ROFL','#ffb800'],['\u{1F97A}','AWW','#ff8fab'],['\u{1F618}','MUAH','#ff6b9d'],['\u{1F644}','UGH','#7f8c8d'],['\u{1F355}','FOOD','#e67e22'],['\u2615','CHAI','#a0522d']];
+const stkCache={};
+function stkSrc(id){const i=Number(String(id).slice(1)),d=STK[i];if(!d)return '';if(stkCache[id])return stkCache[id];
+ const svg="<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 160'><circle cx='80' cy='80' r='72' fill='"+d[2]+"' stroke='#fff' stroke-width='8'/><text x='80' y='96' font-size='68' text-anchor='middle'>"+d[0]+"</text><text x='80' y='138' font-size='26' font-weight='700' font-family='Arial,sans-serif' text-anchor='middle' fill='#fff' stroke='rgba(0,0,0,.55)' stroke-width='5' paint-order='stroke'>"+d[1]+"</text></svg>";
+ return stkCache[id]='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)}
+function stkBox(m){const box=el('div','','stkbox'),im=document.createElement('img');im.decoding='async';im.referrerPolicy='no-referrer';im.alt='Sticker';
+ im.src=m.stk==='c'?(isImgId(m.img)?'/img/'+m.img:''):stkSrc(m.stk);im.onclick=()=>zoom(im.src);im.onerror=()=>{box.innerHTML='';box.append(el('span','Sticker not available any more','imggone'))};box.append(im);return box}
+let stkCtx='room';
+const getMy=()=>{try{return JSON.parse(localStorage.getItem('mystk')||'[]')}catch{return[]}};
+const setMy=a=>{try{localStorage.setItem('mystk',JSON.stringify(a));return true}catch{notice('Could not save the sticker (browser storage is full).');return false}};
+function openStickers(ctx){stkCtx=ctx;renderStk('pack');$('stkm').hidden=false}
+$('stkx').onclick=()=>{$('stkm').hidden=true};$('stkb').onclick=()=>openStickers('room');
+function stkTabs(cur){const r=el('div','','stktabs');[['pack','Stickers'],['mine','My stickers']].forEach(([k,n])=>{const b=el('button',n,'ghost sm'+(cur===k?' on':''));b.type='button';b.onclick=()=>renderStk(k);r.append(b)});return r}
+function renderStk(view){const b=$('stkbody');b.innerHTML='';b.append(stkTabs(view));
+ if(view==='pack'){const g=el('div','','stkgrid');STK.forEach((d,i)=>{const bt=el('button','','stkitem');bt.type='button';bt.setAttribute('aria-label','Send sticker '+d[1]);const im=document.createElement('img');im.src=stkSrc('b'+String(i).padStart(2,'0'));im.alt=d[1];bt.append(im);bt.onclick=()=>sendStk({stk:'b'+String(i).padStart(2,'0')});g.append(bt)});b.append(g);return}
+ if(view==='mine'){const my=getMy(),cr=el('button','+ Create a sticker','sm');cr.type='button';cr.onclick=stkEditor;b.append(cr);
+  if(!my.length)b.append(el('p','You have no stickers yet. Make one from any photo. Only verified accounts can send their own stickers.','mut'));
+  const g=el('div','','stkgrid');my.forEach((x,i)=>{const w=el('div','','stkwrap'),bt=el('button','','stkitem'),im=document.createElement('img');im.src=x.d;im.alt='My sticker';bt.type='button';bt.append(im);bt.onclick=()=>sendMine(i);
+   const del=el('button','\u2715','stkdel');del.type='button';del.setAttribute('aria-label','Delete this sticker');del.onclick=()=>{const a=getMy();a.splice(i,1);setMy(a);renderStk('mine')};w.append(bt,del);g.append(w)});b.append(g)}}
+async function sendStk(body){$('stkm').hidden=true;
+ if(stkCtx==='room'){const r=await fetch('/send',{method:'POST',body:JSON.stringify({room,nick,uid,otok,...body})}).catch(()=>null);
+  if(!r||!r.ok)notice(r&&r.status===429?'Slow down a little.':r&&r.status===403?'You cannot send messages here.':'Could not send the sticker.');return r}
+ const t=thread(stkCtx),r=await dmCall('/dm',{to:stkCtx,...body}).catch(()=>null);
+ if(r&&r.ok){const j=await r.json().catch(()=>({}));t.msgs.push({id:j.id||'',mine:true,stk:body.stk||(body.img?'c':''),img:body.img||'',text:'',t:j.t||Date.now()});t.request=false;renderDms()}
+ else{showDms(stkCtx);dmNote(r&&r.status===404?t.nick+' is not online right now.':r&&r.status===409?'Wait for '+t.nick+' to accept your first message.':'The sticker could not be sent.')}return r}
+async function sendMine(i){if(!acct)return openAuth('in','Log in (verified account) to send your own stickers.');
+ const a=getMy(),x=a[i];if(!x)return;
+ const up=async()=>{const blob=await (await fetch(x.d)).blob(),r=await fetch('/st',{method:'POST',headers:{'Content-Type':blob.type},body:blob}),j=await r.json().catch(()=>({}));
+  if(!r.ok){if(r.status===401)openAuth('in','Please log in again.');else notice(r.status===429?'Too many stickers. Wait a minute.':'Could not upload the sticker.');return''}
+  x.id=j.id;x.at=Date.now();setMy(a);return j.id};
+ let id=x.id&&Date.now()-x.at<20*3600000?x.id:await up();if(!id)return;
+ let r=await sendStk({img:id});
+ if(r&&r.status===400){stkCtx=stkCtx;id=await up();if(id)await sendStk({img:id})}}
+async function stkExport(cv){const sizes=[320,256,192,160],webp=document.createElement('canvas').toDataURL('image/webp').startsWith('data:image/webp');
+ for(const S of sizes){const t=document.createElement('canvas');t.width=t.height=S;t.getContext('2d').drawImage(cv,0,0,S,S);
+  const blob=await new Promise(ok=>t.toBlob(ok,webp?'image/webp':'image/png',0.85));if(blob&&blob.size<=140*1024)return blob}return null}
+const blobData=b=>new Promise(ok=>{const f=new FileReader();f.onload=()=>ok(f.result);f.readAsDataURL(b)});
+function stkEditor(){const b=$('stkbody');b.innerHTML='';const S=320,st={img:null,zoom:1,px:0,py:0,shape:'round',outline:true,text:''};
+ const bar=el('div','','stktabs'),back=el('button','Back','ghost sm');back.type='button';back.onclick=()=>renderStk('mine');bar.append(back);b.append(bar);
+ const file=document.createElement('input');file.type='file';file.accept='image/*';file.setAttribute('aria-label','Choose a photo');
+ const cv=document.createElement('canvas');cv.width=cv.height=S;cv.className='stkcv';
+ const path=(c,ins)=>{c.beginPath();if(st.shape==='round')c.arc(S/2,S/2,S/2-ins,0,Math.PI*2);else if(st.shape==='rounded'){const r=60,x=ins,y=ins,w=S-2*ins;c.moveTo(x+r,y);c.arcTo(x+w,y,x+w,y+w,r);c.arcTo(x+w,y+w,x,y+w,r);c.arcTo(x,y+w,x,y,r);c.arcTo(x,y,x+w,y,r);c.closePath()}else c.rect(ins,ins,S-2*ins,S-2*ins)};
+ function draw(){const c=cv.getContext('2d');c.clearRect(0,0,S,S);
+  if(!st.img){c.fillStyle='#2a2a31';c.fillRect(0,0,S,S);c.fillStyle='#aaa';c.font='20px sans-serif';c.textAlign='center';c.fillText('Choose a photo',S/2,S/2);return}
+  const ins=st.outline?8:0;c.save();path(c,ins);c.clip();const sc=Math.max(S/st.img.width,S/st.img.height)*st.zoom,w=st.img.width*sc,h=st.img.height*sc;c.drawImage(st.img,(S-w)/2+st.px,(S-h)/2+st.py,w,h);c.restore();
+  if(st.outline){path(c,ins);c.lineWidth=16;c.strokeStyle='#fff';c.stroke()}
+  if(st.text){c.font='bold 40px Arial,sans-serif';c.textAlign='center';c.lineJoin='round';c.lineWidth=8;c.strokeStyle='rgba(0,0,0,.85)';c.strokeText(st.text,S/2,S-34);c.fillStyle='#fff';c.fillText(st.text,S/2,S-34)}}
+ file.onchange=()=>{const f=file.files&&file.files[0];if(!f)return;if(!/^image\//.test(f.type)||f.size>12*1048576){notice('Choose a photo (up to 12 MB).');return}
+  const u=URL.createObjectURL(f),im=new Image();im.onload=()=>{st.img=im;st.zoom=1;st.px=st.py=0;zr.value=1;draw();URL.revokeObjectURL(u)};im.onerror=()=>{notice('Could not read that photo.');URL.revokeObjectURL(u)};im.src=u};
+ let drag=null;cv.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,px:st.px,py:st.py};cv.setPointerCapture(e.pointerId)};
+ cv.onpointermove=e=>{if(!drag)return;const k=S/cv.getBoundingClientRect().width;st.px=drag.px+(e.clientX-drag.x)*k;st.py=drag.py+(e.clientY-drag.y)*k;draw()};cv.onpointerup=cv.onpointercancel=()=>{drag=null};
+ const zr=document.createElement('input');zr.type='range';zr.min='1';zr.max='3';zr.step='0.05';zr.value='1';zr.setAttribute('aria-label','Zoom');zr.oninput=()=>{st.zoom=Number(zr.value);draw()};
+ const sh=document.createElement('select');sh.setAttribute('aria-label','Shape');[['round','Circle'],['rounded','Rounded square'],['square','Square']].forEach(([v,n])=>{const o=document.createElement('option');o.value=v;o.textContent=n;sh.append(o)});sh.onchange=()=>{st.shape=sh.value;draw()};
+ const ol=document.createElement('label');ol.className='stkchk';const oc=document.createElement('input');oc.type='checkbox';oc.checked=true;oc.onchange=()=>{st.outline=oc.checked;draw()};ol.append(oc,document.createTextNode(' White border'));
+ const tx=document.createElement('input');tx.type='text';tx.maxLength=18;tx.placeholder='Text on the sticker (optional)';tx.setAttribute('aria-label','Text on the sticker');tx.oninput=()=>{st.text=tx.value;draw()};
+ const sv=el('button','Save sticker','');sv.type='button';const msg=el('p','','mut');msg.setAttribute('role','alert');
+ sv.onclick=async()=>{if(!st.img)return msg.textContent='Choose a photo first.';const my=getMy();if(my.length>=12)return msg.textContent='You can keep 12 stickers. Delete one first.';
+  sv.disabled=true;msg.textContent='Saving...';const blob=await stkExport(cv);if(!blob){sv.disabled=false;return msg.textContent='Could not make a small enough sticker. Try a different photo.'}
+  my.unshift({d:await blobData(blob),id:'',at:0});if(setMy(my))renderStk('mine');else{sv.disabled=false;msg.textContent=''}};
+ b.append(el('p','Pick a photo, drag it to move, use the slider to zoom.','mut'),file,cv,zr,sh,ol,tx,sv,msg);draw()}
 function setReply(m){replyTo=m?{id:m.id,nick:m.nick,text:m.text||(isImgId(m.img)?'[picture]':isImgId(m.aud)?'[voice note]':'')}:null;const b=$('replybar');b.innerHTML='';
  if(!replyTo){b.hidden=true;return}b.hidden=false;const t=el('span','','rtxt');t.append(el('b','Replying to '+replyTo.nick+': '),document.createTextNode(replyTo.text.slice(0,60)));
  const x=el('button','\u2715','ghost sm');x.setAttribute('aria-label','Cancel reply');x.onclick=()=>setReply(null);b.append(t,x);$('text').focus()}
@@ -179,7 +244,8 @@ function add(m){const box=$('msgs');
  if(mine||me.role){const dl=el('a','delete');dl.tabIndex=0;dl.setAttribute('role','button');dl.onclick=()=>rpost('/msgdel',{id:m.id});d.append(dl)}
  if(me.role){const pn=el('a','pin');pn.tabIndex=0;pn.setAttribute('role','button');pn.onclick=()=>rpost('/pin',{id:m.id});d.append(pn)}
  if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.nick),document.createTextNode(' '+m.reply.text));q.onclick=()=>{const t=[...document.querySelectorAll('#msgs .m')].find(x=>x.dataset.mid===m.reply.id);if(t){t.scrollIntoView({block:'center'});t.classList.add('flash');setTimeout(()=>t.classList.remove('flash'),1200)}};d.append(q)}
- if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
+ if(m.stk){d.classList.add('stk');d.append(stkBox(m))}
+ else if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
  if(isImgId(m.aud))d.append(audBox(m.aud,mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
  if(m.text)d.append(el('div',m.text));
  if(m.rx){rxc[m.id]=m.rx;rxRender(d,m.rx,myRx[m.id],e=>reactRoom(m.id,e))}
@@ -261,7 +327,7 @@ async function sendPicture(){
    if(!r2.ok)throw r2.status;$('text').value='';setReply(null)}
   else{const t=thread(p.ctx),inp=$('dmtext'),text=inp?inp.value.trim():'',r2=await dmCall('/dm',{to:p.ctx,text,...att,reply:dmReply&&dmReply.iid===p.ctx?dmReply.id:undefined});
    if(!r2.ok)throw r2.status;const j2=await r2.json().catch(()=>({}));
-   t.msgs.push({id:j2.id||'',mine:true,reply:j2.reply?{id:j2.reply.id,text:j2.reply.text,mine:j2.reply.from===me.iid}:undefined,text,...att,t:j2.t||Date.now()});t.request=false;dmReply=null;if(inp)inp.value=''}
+   t.msgs.push({id:j2.id||'',mine:true,stk:j2.stk||'',reply:j2.reply?{id:j2.reply.id,text:j2.reply.text,mine:j2.reply.from===me.iid}:undefined,text,...att,t:j2.t||Date.now()});t.request=false;dmReply=null;if(inp)inp.value=''}
   clearPending()
  }catch(st){
   if(id)fetch(p.kind==='audio'?'/vn/delete':'/img/delete',{method:'POST',body:JSON.stringify({id})}).catch(()=>{});   // it never reached anyone, so remove the upload again
@@ -457,14 +523,14 @@ const dmCall=(path,body)=>fetch(path,{method:'POST',body:JSON.stringify({dk,...b
 function thread(iid,name,v){let t=threads.get(iid);if(!t){t={iid,nick:name||'Guest',msgs:[],unread:0,request:false,v:false};threads.set(iid,t)}if(name)t.nick=name;if(v!==undefined)t.v=!!v;return t}
 function updateBadge(){let n=0;threads.forEach(t=>n+=t.unread);n+=fr.incoming.length;const b=$('dmbadge');b.hidden=!n;b.textContent=n}
 function onDm(m){if(dmBlocked[m.from])return;const t=thread(m.from,m.nick,m.v),first=!t.msgs.length;
- t.msgs.push({id:m.id,mine:false,reply:m.reply?{id:m.reply.id,text:m.reply.text,mine:m.reply.from===me.iid}:undefined,text:m.text,img:isImgId(m.img)?m.img:'',aud:isImgId(m.aud)?m.aud:'',dur:m.dur,t:m.t});if(first&&m.request)t.request=true;if(m.bg)t.bg=m.bg;
+ t.msgs.push({id:m.id,mine:false,stk:m.stk||'',reply:m.reply?{id:m.reply.id,text:m.reply.text,mine:m.reply.from===me.iid}:undefined,text:m.text,img:isImgId(m.img)?m.img:'',aud:isImgId(m.aud)?m.aud:'',dur:m.dur,t:m.t});if(first&&m.request)t.request=true;if(m.bg)t.bg=m.bg;
  if($('dms').hidden||curThread!==m.from){t.unread++;if(first)notice('Private message from '+t.nick+'. Open Messages to read it.')}
  updateBadge();renderDms()}
 function showDms(iid){closePanels();$('dms').hidden=false;$('dmbtn').setAttribute('aria-expanded','true');curThread=iid||'';
  if(iid){thread(iid).unread=0;updateBadge()}renderDms();const i=$('dmtext');if(i&&!i.disabled)i.focus()}
 function openDm(iid,name,v){thread(iid,name,v);showDms(iid)}
 $('dmbtn').onclick=()=>{if($('dms').hidden)showDms('');else closePanels()};
-const preview=m=>m.aud||m.audGone?'Voice note'+(m.text?': '+m.text:''):m.img||m.gone?'Picture'+(m.text?': '+m.text:''):m.text;
+const preview=m=>m.stk?'Sticker':m.aud||m.audGone?'Voice note'+(m.text?': '+m.text:''):m.img||m.gone?'Picture'+(m.text?': '+m.text:''):m.text;
 function renderDms(){const p=$('dms');if(p.hidden)return;
  const old=$('dmtext'),keep=old?old.value:'',focused=old&&document.activeElement===old;p.innerHTML='';
  if(!curThread){const h=el('div','','dmhead');h.append(el('b','Messages'));const x=el('button','Close','ghost sm');x.onclick=closePanels;h.append(x);
@@ -490,7 +556,8 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
   if(m.id){const ra=el('a','react');ra.tabIndex=0;ra.setAttribute('role','button');ra.onclick=()=>{m.pick=!m.pick;renderDms()};
    const rl=el('a','reply');rl.tabIndex=0;rl.setAttribute('role','button');rl.onclick=()=>{dmReply={iid:t.iid,id:m.id,mine:m.mine,text:m.text||(m.aud||m.audGone?'[voice note]':m.img||m.gone?'[picture]':'')};renderDms()};d.append(ra,rl)}
   if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.mine?'You':t.nick),document.createTextNode(' '+m.reply.text));d.append(q)}
-  if(isImgId(m.img))d.append(imgBox(m.img,m.mine,t.nick));else if(m.gone)d.append(el('div','Picture deleted','imggone'));
+  if(m.stk){d.classList.add('stk');d.append(stkBox(m))}
+  else if(isImgId(m.img))d.append(imgBox(m.img,m.mine,t.nick));else if(m.gone)d.append(el('div','Picture deleted','imggone'));
   if(isImgId(m.aud))d.append(audBox(m.aud,m.mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
   if(m.text)d.append(el('div',m.text));
   if(m.rx)rxRender(d,m.rx,m.myrx,e=>reactDm(t,m,e));
@@ -508,13 +575,15 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
  inp.type='text';inp.id='dmtext';inp.maxLength=500;inp.placeholder='Private message';inp.autocomplete='off';inp.setAttribute('aria-label','Private message');inp.value=keep;
  sb.onclick=()=>sendDm(t,inp);inp.onkeydown=e=>{if(e.key==='Enter')sendDm(t,inp)};
  if(waiting){inp.disabled=true;sb.disabled=true;at.disabled=true;mic.disabled=true}
- f.append(at);if(feat.voice)f.append(mic);f.append(inp,sb);p.insertBefore(h,p.firstChild);p.insertBefore(body,pb||null);if(rb)p.append(rb);p.append(f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
+ const sk=el('button','\uD83C\uDFF7','ghost');sk.id='dmstk';sk.setAttribute('aria-label','Stickers');sk.onclick=()=>openStickers(t.iid);
+ if(waiting)sk.disabled=true;
+ f.append(at,sk);if(feat.voice)f.append(mic);f.append(inp,sb);p.insertBefore(h,p.firstChild);p.insertBefore(body,pb||null);if(rb)p.append(rb);p.append(f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
 function dmNote(text){const b=$('dmmsgs');if(b){b.append(el('p',text,'dmerr'));b.scrollTop=b.scrollHeight}else notice(text)}
 function sendDm(t,inp){if(pending&&pending.ctx===t.iid)return sendPicture();
  const text=inp.value.trim();if(!text)return;inp.value='';
  const rid=dmReply&&dmReply.iid===t.iid?dmReply.id:undefined;
  dmCall('/dm',{to:t.iid,text,reply:rid}).then(async r=>{
-  if(r.ok){const j=await r.json().catch(()=>({}));t.msgs.push({id:j.id||'',mine:true,reply:j.reply?{id:j.reply.id,text:j.reply.text,mine:j.reply.from===me.iid}:undefined,text,t:j.t||Date.now()});t.request=false;dmReply=null;renderDms();return}
+  if(r.ok){const j=await r.json().catch(()=>({}));t.msgs.push({id:j.id||'',mine:true,stk:j.stk||'',reply:j.reply?{id:j.reply.id,text:j.reply.text,mine:j.reply.from===me.iid}:undefined,text,t:j.t||Date.now()});t.request=false;dmReply=null;renderDms();return}
   inp.value=text;
   dmNote(r.status===404?t.nick+' is not online right now.':r.status===409?'Wait for '+t.nick+' to accept your first message.':r.status===429?'Slow down a little.':'This message could not be sent.')
  }).catch(()=>{inp.value=text;dmNote('Network problem. Try again.')})}
@@ -539,7 +608,7 @@ $('text').oninput=()=>{const now=Date.now();
   t.value=t.value.slice(0,s)+e+t.value.slice(x);t.focus();t.selectionStart=t.selectionEnd=s+e.length};
  $('emojis').append(b)});
 $('emo').onclick=()=>{const open=$('emojis').hidden;closePanels();$('emojis').hidden=!open;$('emo').setAttribute('aria-expanded',String(open))};
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('lightbox').hidden)$('lightbox').click();else if(!$('auth').hidden)closeAuth();else closePanels()}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('stkm').hidden)$('stkm').hidden=true;else if(!$('lightbox').hidden)$('lightbox').click();else if(!$('auth').hidden)closeAuth();else closePanels()}});
 
 function send(){if(pending&&pending.ctx==='room')return sendPicture();
  const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;

@@ -148,3 +148,16 @@ textarea{background:#26262c;border:1px solid var(--line);color:#eee;border-radiu
 .rxpick .chip{font-size:18px;padding:2px 8px}
 .replybar{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--card);border-top:1px solid var(--line);font-size:13px}
 .replybar .rtxt{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.dmbody{display:flex;flex-direction:column;gap:6px}
+.dmbody .m.me,.m.me.stk{align-self:flex-end}
+.dmbody .m{align-self:flex-start;width:fit-content}
+.dmbody .m.me{align-self:flex-end}
+.m.stk,.m.me.stk{background:none;padding:2px 4px}
+.stkbox img{width:130px;height:130px;object-fit:contain;display:block;cursor:zoom-in}
+.stktabs{display:flex;gap:6px;margin-bottom:10px}.stktabs .on{border-color:var(--y);color:var(--y)}
+.stkgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+.stkitem{background:none;border:1px solid var(--line);border-radius:12px;padding:4px;cursor:pointer}.stkitem img{width:100%;display:block}
+.stkwrap{position:relative}.stkdel{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;background:#33333b;color:#fff;border:1px solid var(--line);font-size:11px;padding:0;cursor:pointer}
+#stkbody{padding:12px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+.stkcv{width:256px;height:256px;max-width:100%;background:repeating-conic-gradient(#2a2a31 0 25%,#34343c 0 50%) 0 0/16px 16px;border-radius:12px;touch-action:none;align-self:center}
+.stkchk{font-size:14px;color:#ddd}
