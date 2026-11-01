@@ -1,7 +1,7 @@
 'use strict';
 // Voice notes. Like pictures: only logged-in (email verified) accounts may send them, they are stored in the Upstash
 // database for 3 days, the sender can delete them any time, and a reported one is copied to a 14 day evidence key.
-// Clips are at most 30 seconds (about 100 KB), recorded by the browser as webm/opus, ogg/opus or mp4/aac.
+// Clips are at most VOICE_MAX_SEC seconds (default 120, about 3 KB per second), recorded by the browser as webm/opus, ogg/opus or mp4/aac.
 const crypto = require('crypto');
 
 function kind(b) {   // what is this file really? (the first bytes decide, never the name or the content-type header)
@@ -12,8 +12,8 @@ function kind(b) {   // what is this file really? (the first bytes decide, never
   return '';
 }
 
-module.exports = function createVoice({ db, dbReady, session, isBanned, budgetMB, ttlDays }) {
-  const MAX = 160 * 1024, TTL = (ttlDays || 3) * 86400, BUDGET = (budgetMB || 50) * 1048576, EVIDENCE_TTL = 14 * 86400;
+module.exports = function createVoice({ db, dbReady, session, isBanned, budgetMB, ttlDays, maxSec }) {
+  const SEC = maxSec || 30, MAX = Math.round(SEC * 4000 + 20 * 1024), TTL = (ttlDays || 3) * 86400, BUDGET = (budgetMB || 50) * 1048576, EVIDENCE_TTL = 14 * 86400;
   const cache = new Map(); let cacheBytes = 0; const CACHE_MAX = 8 * 1024 * 1024;
   const owner = new Map(), gone = new Set(), rate = new Map();
   let lastErr = '', used = 0, usedAt = 0, added = 0;
@@ -47,7 +47,7 @@ module.exports = function createVoice({ db, dbReady, session, isBanned, budgetMB
     if (!dbReady()) return json(res, 503, { error: 'unavailable' });
     if (Number(req.headers['content-length'] || 0) > MAX) { res.setHeader('Connection', 'close'); return json(res, 413, { error: 'too_big' }); }
     if (limited('m:' + user.id, 6, 60000) || limited('d:' + user.id, 60, 86400000)) return json(res, 429, { error: 'rate' });
-    const dur = Math.max(1, Math.min(30, Math.round(Number(req.headers['x-dur']) || 0)));
+    const dur = Math.max(1, Math.min(SEC, Math.round(Number(req.headers['x-dur']) || 0)));
     readBuf(req, res, MAX, async buf => {
       try {
         const mime = kind(buf);

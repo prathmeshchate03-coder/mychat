@@ -24,6 +24,7 @@
 <div id="lightbox" hidden role="dialog" aria-label="Picture"><img alt=""></div>
 <input type="file" id="picfile" accept="image/*" hidden><input type="file" id="bgfile" accept="image/*" hidden>
 <div id="aboutm" class="modal" hidden role="dialog" aria-modal="true" aria-label="About this room"><div class="box"><div class="dmhead"><b>About this room</b><button type="button" id="aboutx" class="ghost sm">Close</button></div><div id="aboutbody"></div></div></div>
+<div id="optm" class="modal" hidden role="dialog" aria-modal="true" aria-label="Message options"><div class="box optbox"><div id="optbody"></div></div></div>
 <div id="stkm" class="modal" hidden role="dialog" aria-modal="true" aria-label="Stickers"><div class="box"><div class="dmhead"><b>Stickers</b><button type="button" id="stkx" class="ghost sm">Close</button></div><div id="stkbody"></div></div></div>
 <div id="managem" class="modal" hidden role="dialog" aria-modal="true" aria-label="Manage room"><div class="box"><div class="dmhead"><b>Manage room</b><button type="button" id="managex" class="ghost sm">Close</button></div>
 <div class="authbody"><input type="text" id="mt" class="adm" maxlength="80" placeholder="Topic" aria-label="Topic"><textarea id="md" class="adm" maxlength="300" rows="3" placeholder="Description" aria-label="Description"></textarea><textarea id="mr" class="adm" maxlength="500" rows="4" placeholder="Rules" aria-label="Rules"></textarea>
@@ -154,8 +155,8 @@ function rxRender(d,c,mineE,tap){const old=d.querySelector(':scope>.rxrow');if(o
 function rxPicker(d,tap){const old=d.querySelector(':scope>.rxpick');if(old){old.remove();return}
  const p=el('div','','rxpick');RXE.forEach(e=>{const b=el('button',e,'chip');b.type='button';b.setAttribute('aria-label','React '+e);b.onclick=()=>{p.remove();tap(e)};p.append(b)});d.append(p)}
 const msgEl=id=>[...document.querySelectorAll('#msgs .m')].find(x=>x.dataset.mid===id);
-async function reactRoom(id,e){const r=await fetch('/react',{method:'POST',body:JSON.stringify({room,otok,uid,id,e})}).catch(()=>null);
- if(r&&r.ok){const j=await r.json().catch(()=>({}));myRx[id]=j.mine;const d=msgEl(id);if(d)rxRender(d,rxc[id],myRx[id],x=>reactRoom(id,x))}else notice('Could not react.')}
+async function reactRoom(id,e){const r=await fetch('/react',{method:'POST',body:JSON.stringify({room,otok,uid,cid:me.id,id,e})}).catch(()=>null);
+ if(r&&r.ok){const j=await r.json().catch(()=>({}));myRx[id]=j.mine;const d=msgEl(id);if(d)rxRender(d,rxc[id],myRx[id],x=>reactRoom(id,x))}else notice('Could not react'+(r?' ('+r.status+')':' (no connection)')+'.')}
 function onRx(x){rxc[x.id]=x.c;const d=msgEl(x.id);if(d)rxRender(d,x.c,myRx[x.id],e=>reactRoom(x.id,e))}
 function onDmRx(x){const t=threads.get(x.with);if(!t)return;const m=t.msgs.find(y=>y.id===x.id);if(m){m.rx=x.c;renderDms()}}
 function reactDm(t,m,e){m.pick=false;dmCall('/dm/react',{to:t.iid,id:m.id,e}).then(async r=>{if(r.ok){const j=await r.json().catch(()=>({}));m.myrx=j.mine}else dmNote('Could not react.');renderDms()}).catch(()=>{})}
@@ -171,6 +172,34 @@ function stkSrc(id){const i=Number(String(id).slice(1)),d=STK[i];if(!d)return ''
  return stkCache[id]='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)}
 function stkBox(m){const box=el('div','','stkbox'),im=document.createElement('img');im.decoding='async';im.referrerPolicy='no-referrer';im.alt='Sticker';
  im.src=m.stk==='c'?(isImgId(m.img)?'/img/'+m.img:''):stkSrc(m.stk);im.onclick=()=>zoom(im.src);im.onerror=()=>{box.innerHTML='';box.append(el('span','Sticker not available any more','imggone'))};box.append(im);return box}
+// ---- message options: tap a message (or its ... button) instead of having many links on every message ----
+function optItem(icon,label,fn,danger){const b=el('button','','optitem'+(danger?' danger':''));b.type='button';b.append(el('span',icon,'opticon'),el('span',label));b.onclick=()=>{closeOpt();fn()};return b}
+function closeOpt(){$('optm').hidden=true}
+$('optm').onclick=e=>{if(e.target===$('optm'))closeOpt()};
+function optShell(title,preview,quick){const b=$('optbody');b.innerHTML='';b.append(el('div',title,'opttitle'));if(preview)b.append(el('div',preview,'optprev'));
+ if(quick){const r=el('div','','optrx');RXE.forEach(e=>{const c=el('button',e,'chip');c.type='button';c.setAttribute('aria-label','React '+e);c.onclick=()=>{closeOpt();quick(e)};r.append(c)});b.append(r)}
+ return b}
+function optClose(b){const c=el('button','Close','ghost');c.type='button';c.onclick=closeOpt;b.append(c);$('optm').hidden=false}
+const copyText=t=>{try{navigator.clipboard.writeText(t).then(()=>notice('Copied.'),()=>notice('Could not copy.'))}catch{notice('Could not copy.')}};
+function openMsgOptions(m,mine){
+ const txt=m.text||(m.stk?'[sticker]':isImgId(m.img)?'[picture]':isImgId(m.aud)?'[voice note]':''),b=optShell('Message options: '+m.nick,txt.slice(0,120),e=>reactRoom(m.id,e));
+ const u=m.uid?users.find(x=>x.uid===m.uid):null;
+ b.append(optItem('\u21A9','Reply',()=>setReply(m)));
+ if(m.text)b.append(optItem('\u29C9','Copy message',()=>copyText(m.text)));
+ if(mine||me.role)b.append(optItem('\u{1F5D1}','Delete message',()=>rpost('/msgdel',{id:m.id}),true));
+ if(me.role){const isPin=pinned&&pinned.id===m.id;b.append(optItem('\u2B50',isPin?'Unpin message':'Pin message',()=>rpost('/pin',{id:isPin?null:m.id})))}
+ if(me.role&&u&&!u.role&&u.id!==me.id){b.append(optItem('\u{1F6AB}','Ban from room',()=>banUser(u),true));b.append(optItem('\u{1F6AA}','Remove from room (1 hour)',()=>kickUser(u),true))}
+ if(!mine&&m.uid&&u&&u.iid&&me.iid&&u.iid!==me.iid&&!dmBlocked[u.iid])b.append(optItem('\u{1F4AC}','Message user',()=>openDm(u.iid,u.nick,u.v)));
+ if(!mine&&m.v&&soc()&&idOfUid(m.uid)&&!fr.friends.some(f=>f.uid===m.uid))b.append(optItem('\u{1F464}','Add as friend',()=>friendAct('request',idOfUid(m.uid))));
+ if(!mine&&m.uid)b.append(optItem('\u26D4',blocked[m.uid]?'Unblock user':'Block user',()=>blocked[m.uid]?unblock(m.uid):block(m.uid,m.nick)));
+ if(!mine)b.append(optItem('\u{1F6A9}','Report message',()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});notice('Reported. Thank you.')},true));
+ optClose(b)}
+function openDmOptions(t,m){
+ const txt=m.text||(m.stk?'[sticker]':m.aud||m.audGone?'[voice note]':m.img||m.gone?'[picture]':''),b=optShell('Message options: '+(m.mine?'You':t.nick),txt.slice(0,120),e=>reactDm(t,m,e));
+ b.append(optItem('\u21A9','Reply',()=>{dmReply={iid:t.iid,id:m.id,mine:m.mine,text:txt};renderDms()}));
+ if(m.text)b.append(optItem('\u29C9','Copy message',()=>copyText(m.text)));
+ if(!m.mine)b.append(optItem('\u{1F6A9}','Report message',()=>{dmCall('/report',{id:m.id});notice('Reported. Thank you.')},true));
+ optClose(b)}
 let stkCtx='room';
 const getMy=()=>{try{return JSON.parse(localStorage.getItem('mystk')||'[]')}catch{return[]}};
 const setMy=a=>{try{localStorage.setItem('mystk',JSON.stringify(a));return true}catch{notice('Could not save the sticker (browser storage is full).');return false}};
@@ -234,15 +263,9 @@ function add(m){const box=$('msgs');
  if(m.uid&&blocked[m.uid])return;
  const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
  const b=el('b',m.nick);if(m.v)b.append(tick());d.append(b);
- if(!mine&&m.uid){const bl=el('a','block');bl.tabIndex=0;bl.setAttribute('role','button');bl.onclick=()=>block(m.uid,m.nick);d.append(bl)}
- if(!mine&&m.v&&soc()&&idOfUid(m.uid)&&!fr.friends.some(f=>f.uid===m.uid)){const fl=el('a','+friend');fl.tabIndex=0;fl.setAttribute('role','button');fl.onclick=()=>{friendAct('request',idOfUid(m.uid));fl.remove()};d.append(fl)}
- const ra=el('a','react');ra.tabIndex=0;ra.setAttribute('role','button');ra.onclick=()=>rxPicker(d,e=>reactRoom(m.id,e));
- const rl=el('a','reply');rl.tabIndex=0;rl.setAttribute('role','button');rl.onclick=()=>setReply(m);
- const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');
- rp.onclick=()=>{fetch('/report',{method:'POST',body:JSON.stringify({room,id:m.id})});rp.textContent='reported'};
- d.append(ra,rl,rp);d.dataset.mid=m.id;
- if(mine||me.role){const dl=el('a','delete');dl.tabIndex=0;dl.setAttribute('role','button');dl.onclick=()=>rpost('/msgdel',{id:m.id});d.append(dl)}
- if(me.role){const pn=el('a','pin');pn.tabIndex=0;pn.setAttribute('role','button');pn.onclick=()=>rpost('/pin',{id:m.id});d.append(pn)}
+ d.dataset.mid=m.id;
+ const more=el('a','\u22EF','more');more.tabIndex=0;more.setAttribute('role','button');more.setAttribute('aria-label','Message options');more.onclick=e=>{e.stopPropagation();openMsgOptions(m,mine)};more.onkeydown=e=>{if(e.key==='Enter')openMsgOptions(m,mine)};d.append(more);
+ d.onclick=e=>{if(e.target.closest('a,button,img,audio,.quote,.rxrow,.imgbox,.audbox'))return;if(String(getSelection()))return;openMsgOptions(m,mine)};
  if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.nick),document.createTextNode(' '+m.reply.text));q.onclick=()=>{const t=[...document.querySelectorAll('#msgs .m')].find(x=>x.dataset.mid===m.reply.id);if(t){t.scrollIntoView({block:'center'});t.classList.add('flash');setTimeout(()=>t.classList.remove('flash'),1200)}};d.append(q)}
  if(m.stk){d.classList.add('stk');d.append(stkBox(m))}
  else if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
@@ -552,16 +575,14 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
  const body=el('div','','dmbody');body.id='dmmsgs';applyBg(body,t.bg);
  if(!t.msgs.length)body.append(el('p','Say hello to '+t.nick+'. They have to accept your first message before you can send more.','mut'));
  t.msgs.forEach(m=>{const d=el('div','','m'+(m.mine?' me':''));d.append(el('b',m.mine?'You':t.nick));
-  if(!m.mine){const rp=el('a','report');rp.tabIndex=0;rp.setAttribute('role','button');rp.onclick=()=>{dmCall('/report',{id:m.id});rp.textContent='reported'};d.append(rp)}
-  if(m.id){const ra=el('a','react');ra.tabIndex=0;ra.setAttribute('role','button');ra.onclick=()=>{m.pick=!m.pick;renderDms()};
-   const rl=el('a','reply');rl.tabIndex=0;rl.setAttribute('role','button');rl.onclick=()=>{dmReply={iid:t.iid,id:m.id,mine:m.mine,text:m.text||(m.aud||m.audGone?'[voice note]':m.img||m.gone?'[picture]':'')};renderDms()};d.append(ra,rl)}
+  if(m.id){const more=el('a','\u22EF','more');more.tabIndex=0;more.setAttribute('role','button');more.setAttribute('aria-label','Message options');more.onclick=e=>{e.stopPropagation();openDmOptions(t,m)};more.onkeydown=e=>{if(e.key==='Enter')openDmOptions(t,m)};d.append(more);
+   d.onclick=e=>{if(e.target.closest('a,button,img,audio,.quote,.rxrow,.imgbox,.audbox'))return;if(String(getSelection()))return;openDmOptions(t,m)}}
   if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.mine?'You':t.nick),document.createTextNode(' '+m.reply.text));d.append(q)}
   if(m.stk){d.classList.add('stk');d.append(stkBox(m))}
   else if(isImgId(m.img))d.append(imgBox(m.img,m.mine,t.nick));else if(m.gone)d.append(el('div','Picture deleted','imggone'));
   if(isImgId(m.aud))d.append(audBox(m.aud,m.mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
   if(m.text)d.append(el('div',m.text));
   if(m.rx)rxRender(d,m.rx,m.myrx,e=>reactDm(t,m,e));
-  if(m.pick){const pk=el('div','','rxpick');RXE.forEach(e=>{const b=el('button',e,'chip');b.type='button';b.onclick=()=>reactDm(t,m,e);pk.append(b)});d.append(pk)}
   body.append(d)});
  const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
  if(t.request){const bar=el('div','','dmreq'),ac=el('button','Accept','sm');bar.append(el('span',t.nick+' wants to message you.'));
@@ -608,7 +629,7 @@ $('text').oninput=()=>{const now=Date.now();
   t.value=t.value.slice(0,s)+e+t.value.slice(x);t.focus();t.selectionStart=t.selectionEnd=s+e.length};
  $('emojis').append(b)});
 $('emo').onclick=()=>{const open=$('emojis').hidden;closePanels();$('emojis').hidden=!open;$('emo').setAttribute('aria-expanded',String(open))};
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('stkm').hidden)$('stkm').hidden=true;else if(!$('lightbox').hidden)$('lightbox').click();else if(!$('auth').hidden)closeAuth();else closePanels()}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('optm').hidden)closeOpt();else if(!$('stkm').hidden)$('stkm').hidden=true;else if(!$('lightbox').hidden)$('lightbox').click();else if(!$('auth').hidden)closeAuth();else closePanels()}});
 
 function send(){if(pending&&pending.ctx==='room')return sendPicture();
  const t=$('text').value.trim();if(!t)return;$('text').value='';$('emojis').hidden=true;

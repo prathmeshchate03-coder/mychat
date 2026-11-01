@@ -4,6 +4,7 @@ const http = require('http'), fs = require('fs'), path = require('path'), crypto
 const PORT = process.env.PORT || 3000, PUB = path.join(__dirname, 'public');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 // Features that are built but switched off until you set the variable to 1 on the server (Render > Environment).
+const VOICE_SEC = Math.max(10, Math.min(300, Number(process.env.VOICE_MAX_SEC) || 120));   // longest voice note, in seconds
 const FEAT = { social: process.env.FEATURE_SOCIAL === '1', voice: process.env.FEATURE_VOICE === '1' };
 const rooms = new Map(), hits = new Map(), conns = new Map();
 const bans = new Map();       // ip -> { reason, t, until }  (until = 0 means permanent)
@@ -217,7 +218,7 @@ const social = require('./social')({ db: dbCmd, dbReady: dbOn, session: req => a
 const images = require('./images')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
   budgetMB: Number(process.env.IMAGE_BUDGET_MB) || 200, ttlDays: 7 });
 const voice = require('./voice')({ db: dbCmd, dbReady: dbOn, session: req => auth.session(req), isBanned: ip => isBanned(ip),
-  budgetMB: Number(process.env.VOICE_BUDGET_MB) || 50, ttlDays: 3 });
+  budgetMB: Number(process.env.VOICE_BUDGET_MB) || 50, ttlDays: 3, maxSec: VOICE_SEC });
 const acctIid = id => sha('acct:' + id).slice(0, 16);   // DM identity of an account, the same on every device
 const STK_COUNT = 24;   // built-in stickers b00..b23 (drawn in the browser)
 const RX = ['\u{1F44D}', '\u2764\uFE0F', '\u{1F602}', '\u{1F62E}', '\u{1F622}', '\u{1F64F}'];
@@ -332,7 +333,7 @@ async function handle(req, res) {
     return res.end(content);
   }
   if (auth.handle(req, res, url, ip, seo.siteBase(req), readBody)) return;   // /auth/*, /verify, /reset
-  if (url.pathname === '/features') return json(res, 200, FEAT);
+  if (url.pathname === '/features') return json(res, 200, { ...FEAT, voiceSec: VOICE_SEC });
   if ((!FEAT.voice && /^\/(vn|vn\/delete|vn\/[a-f0-9]{32}|admin\/api\/voice)$/.test(url.pathname)) || (!FEAT.social && /^\/(subs|friends)$/.test(url.pathname))) { res.writeHead(404); return res.end(); }
   if (url.pathname === '/img' && req.method === 'POST') {
     if (!auth.originOk(req)) return json(res, 403, { error: 'origin' });
@@ -513,7 +514,7 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), user = auth.session(req);
         let text = clean(m.text, 500), nick = clean(m.nick, 20);
-        const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(30, Math.round(Number(m.dur) || 1)));
+        const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(VOICE_SEC, Math.round(Number(m.dur) || 1)));
         const stkB = /^b\d{2}$/.test(String(m.stk || '')) && Number(String(m.stk).slice(1)) < STK_COUNT ? String(m.stk) : '';   // built-in sticker
         if (stkB) text = '';
         if (user) nick = user.name;
@@ -582,7 +583,7 @@ async function handle(req, res) {
       try {
         const m = JSON.parse(body), { user, iid: from } = who(req, m), to = String(m.to || '');
         let text = clean(m.text, 500);
-        const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(30, Math.round(Number(m.dur) || 1)));
+        const imgId = m.img ? String(m.img) : '', audId = m.aud ? String(m.aud) : '', dur = Math.max(1, Math.min(VOICE_SEC, Math.round(Number(m.dur) || 1)));
         const stkB = /^b\d{2}$/.test(String(m.stk || '')) && Number(String(m.stk).slice(1)) < STK_COUNT ? String(m.stk) : '';
         if (stkB) text = '';
         if (!from || !okIid(to) || to === from || (!text && !imgId && !audId && !stkB) || (imgId && audId) || (stkB && (imgId || audId))) return json(res, 400, { error: 'bad request' });
@@ -753,11 +754,11 @@ async function handle(req, res) {
         const m = JSON.parse(body), name = String(m.room || '').toLowerCase(), r = rooms.get(name), user = auth.session(req), e = String(m.e || '');
         if (!r || !RX.includes(e) || isBanned(ip) || closed.has(name)) return json(res, 403, { error: 'not allowed' });
         if (roleLv(r, user, m.otok) === 0 && (isKicked(r, ip) || roomBanned(r, ip, user))) return json(res, 403, { error: 'not allowed' });
-        if (![...r.clients].some(c => c.ip === ip)) return json(res, 403, { error: 'join the room first' });
+        if (!m.cid || ![...r.clients].some(c => c.cid === String(m.cid))) return json(res, 403, { error: 'join the room first' });   // only people connected to the room (their connection id is only known inside it)
         if (toolLimited(ip)) return json(res, 429, { error: 'slow down' });
         const id = String(m.id || ''), msg = r.history.find(x => x.id === id);
         if (!msg) return json(res, 404, { error: 'gone' });
-        const key = user ? 'a' + user.id : 'g' + sha(ip + clean(m.uid, 24)).slice(0, 12), votes = r.rx.get(id) || new Map();
+        const key = user ? 'a' + user.id : 'g' + sha(clean(m.uid, 24) || ip).slice(0, 12), votes = r.rx.get(id) || new Map();
         if (votes.get(key) === e) votes.delete(key); else votes.set(key, e);
         r.rx.set(id, votes);
         const c = rxCount(votes); if (Object.keys(c).length) msg.rx = c; else delete msg.rx;
