@@ -171,3 +171,17 @@ textarea{background:#26262c;border:1px solid var(--line);color:#eee;border-radiu
 .optitem{display:flex;align-items:center;gap:14px;width:100%;text-align:left;background:none;border:0;color:#eee;font-size:15px;padding:10px 6px;border-radius:8px;cursor:pointer}
 .optitem:hover,.optitem:focus-visible{background:#2d2d35}.optitem.danger{color:#ff8a8a}
 .opticon{width:22px;text-align:center;font-size:18px}
+/* compact chat layout: name above the bubble (first message of a run only), round letter badge, small bubbles */
+#msgs{gap:0;padding:8px 10px}
+.mrow{display:flex;align-items:flex-end;gap:8px;margin-top:8px}.mrow.cont{margin-top:2px}.mrow.me{justify-content:flex-end}
+.mav{flex:0 0 32px;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fff}
+.mrow.cont .mav{background:none}
+.mcol{display:flex;flex-direction:column;min-width:0;max-width:min(82%,380px)}.mrow.me .mcol{align-items:flex-end}
+.mname{display:flex;align-items:center;gap:6px;margin:0 0 2px 10px;font-size:12px;line-height:1.2}.mname b{font-size:12px}
+.mrole{font-size:10px;color:#aaa;border:1px solid var(--line);border-radius:8px;padding:0 5px}
+.mcol .m,.mrow .m{max-width:100%;padding:6px 10px;border-radius:14px;line-height:1.35}
+.mrow:not(.me) .m{border-top-left-radius:4px}.mrow.me .m{border-top-right-radius:4px}
+.mtime{float:right;margin:7px 0 0 10px;font-size:10px;color:#9a9aa4}
+.m.stk .mtime{display:none}
+.m:focus-visible{outline:2px solid var(--y)}
+.m.stk,.m.me.stk{padding:0}

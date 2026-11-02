@@ -127,18 +127,18 @@ function join(name){name=slug(name);if(!name)return;room=name;location.hash=name
  if(es)es.close();
  es=new EventSource('/events?room='+name+'&nick='+encodeURIComponent(nick)+'&uid='+uid+'&dk='+dk+(otok?'&otok='+otok:''));
  es.onmessage=e=>{const d=JSON.parse(e.data);
-  if(d.history){me=d.you||me;$('msgs').innerHTML='';d.history.forEach(add);applyBg($('msgs'),d.bg);applyAbout(d.about);applyPin(d.pin);renderUsers();
+  if(d.history){me=d.you||me;$('msgs').innerHTML='';lastRun=null;d.history.forEach(add);applyBg($('msgs'),d.bg);applyAbout(d.about);applyPin(d.pin);renderUsers();
    if(Object.keys(dmBlocked).length)dmCall('/dm/block',{add:Object.keys(dmBlocked)}).catch(()=>{})}   // keep the server's block list in step after restarts
   else if(d.typing)onTyping(d);
   else if(d.rx)onRx(d.rx);
   else if(d.dmrx)onDmRx(d.dmrx);
   else if(d.dm)onDm(d.dm);
   else if(d.friend)onFriend(d.friend);
-  else if(d.del)document.querySelectorAll('#msgs .m').forEach(x=>{if(x.dataset.mid===d.del)x.remove()});
+  else if(d.del){document.querySelectorAll('#msgs .mrow').forEach(x=>{if(x.dataset.mid===d.del)x.remove()});lastRun=null}
   else if('pin' in d)applyPin(d.pin);
   else if('role' in d){me.role=d.role;renderUsers();notice(d.role?'You are now '+(d.role==='admin'?'an admin':'a mod')+' of this room.':'You are no longer staff of this room.')}
   else if(d.about)applyAbout(d.about);
-  else if(d.clear)document.querySelectorAll('#msgs .m').forEach(x=>x.remove());
+  else if(d.clear){document.querySelectorAll('#msgs .mrow').forEach(x=>x.remove());lastRun=null}
   else if('roombg' in d)applyBg($('msgs'),d.roombg);
   else if(d.dmbg){thread(d.dmbg.with).bg=d.dmbg.bg;renderDms()}
   else if(d.imgdel)markDeleted(d.imgdel);
@@ -256,23 +256,29 @@ function stkEditor(){const b=$('stkbody');b.innerHTML='';const S=320,st={img:nul
 function setReply(m){replyTo=m?{id:m.id,nick:m.nick,text:m.text||(isImgId(m.img)?'[picture]':isImgId(m.aud)?'[voice note]':'')}:null;const b=$('replybar');b.innerHTML='';
  if(!replyTo){b.hidden=true;return}b.hidden=false;const t=el('span','','rtxt');t.append(el('b','Replying to '+replyTo.nick+': '),document.createTextNode(replyTo.text.slice(0,60)));
  const x=el('button','\u2715','ghost sm');x.setAttribute('aria-label','Cancel reply');x.onclick=()=>setReply(null);b.append(t,x);$('text').focus()}
+let lastRun=null;
+const hue=k=>{let h=0;for(const c of String(k))h=(h*31+c.charCodeAt(0))%360;return h};
 function add(m){const box=$('msgs');
- if(m.system){const d=el('div',m.text,'sys');
+ if(m.system){lastRun=null;const d=el('div',m.text,'sys');
   if(m.users){users=m.users;renderUsers()}
   if(m.text)box.append(d);box.scrollTop=box.scrollHeight;return}
  if(m.uid&&blocked[m.uid])return;
  const mine=m.uid?m.uid===uid:m.nick===nick,d=el('div','','m'+(mine?' me':''));if(m.uid)d.dataset.uid=m.uid;
- const b=el('b',m.nick);if(m.v)b.append(tick());d.append(b);
- d.dataset.mid=m.id;
- const more=el('a','\u22EF','more');more.tabIndex=0;more.setAttribute('role','button');more.setAttribute('aria-label','Message options');more.onclick=e=>{e.stopPropagation();openMsgOptions(m,mine)};more.onkeydown=e=>{if(e.key==='Enter')openMsgOptions(m,mine)};d.append(more);
+ d.dataset.mid=m.id;d.tabIndex=0;d.setAttribute('role','button');d.setAttribute('aria-label','Message from '+m.nick+'. Open options');
+ d.onkeydown=e=>{if(e.key==='Enter'&&e.target===d)openMsgOptions(m,mine)};
  d.onclick=e=>{if(e.target.closest('a,button,img,audio,.quote,.rxrow,.imgbox,.audbox'))return;if(String(getSelection()))return;openMsgOptions(m,mine)};
  if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.nick),document.createTextNode(' '+m.reply.text));q.onclick=()=>{const t=[...document.querySelectorAll('#msgs .m')].find(x=>x.dataset.mid===m.reply.id);if(t){t.scrollIntoView({block:'center'});t.classList.add('flash');setTimeout(()=>t.classList.remove('flash'),1200)}};d.append(q)}
  if(m.stk){d.classList.add('stk');d.append(stkBox(m))}
  else if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
  if(isImgId(m.aud))d.append(audBox(m.aud,mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
- if(m.text)d.append(el('div',m.text));
+ if(m.text){const t=el('div',m.text);if(m.t){const tm=el('span',new Date(m.t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),'mtime');t.append(tm)}d.append(t)}
  if(m.rx){rxc[m.id]=m.rx;rxRender(d,m.rx,myRx[m.id],e=>reactRoom(m.id,e))}
- box.append(d);box.scrollTop=box.scrollHeight}
+ // layout: others get a round letter badge and their name above the bubble, only on the first message of a run; mine sit on the right without either
+ const key=m.uid||m.nick,cont=!!(lastRun&&lastRun.key===key&&Math.abs((m.t||0)-lastRun.t)<120000);lastRun={key,t:m.t||Date.now()};
+ const row=el('div','','mrow'+(mine?' me':'')+(cont?' cont':'')),col=el('div','','mcol');row.dataset.mid=m.id;if(m.uid)row.dataset.uid=m.uid;
+ if(!mine){const av=el('div',cont?'':(m.nick||'?').slice(0,1).toUpperCase(),'mav');if(!cont)av.style.background='hsl('+hue(key)+' 45% 38%)';row.append(av);
+  if(!cont){const lb=el('div','','mname'),nb=el('b',m.nick);nb.style.color='hsl('+hue(key)+' 70% 70%)';if(m.v)nb.append(tick());lb.append(nb);if(m.role)lb.append(el('span',m.role,'mrole'));col.append(lb)}}
+ col.append(d);row.append(col);box.append(row);box.scrollTop=box.scrollHeight}
 
 // ---- pictures: choose, shrink, preview, send, view, delete ----
 const isImgId=s=>/^[a-f0-9]{32}$/.test(String(s||''));
@@ -528,7 +534,7 @@ function renderUsers(){
   ids.forEach(id=>{const row=el('div','','urow');row.append(el('span',blocked[id],'un'));const ub=el('button','Unblock','ghost sm');ub.onclick=()=>unblock(id);row.append(ub);p.append(row)})}}
 function block(id,name){if(Object.keys(blocked).length>=200)return notice('Block list is full.');
  blocked[id]=name;saveBlocked();
- document.querySelectorAll('#msgs .m').forEach(m=>{if(m.dataset.uid===id)m.remove()});
+ document.querySelectorAll('#msgs .mrow').forEach(m=>{if(m.dataset.uid===id)m.remove()});
  notice('Blocked '+name+'. You can undo it from the online list.');renderUsers()}
 function unblock(id){delete blocked[id];saveBlocked();renderUsers();notice('Unblocked. Their new messages will show again.')}
 function kickUser(u){if(!confirm('Remove '+u.nick+' from this room?'))return;
@@ -574,7 +580,7 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
  back.onclick=()=>{curThread='';renderDms()};blk.onclick=()=>blockDm(t);const bgb=el('button','Background','ghost sm');bgb.onclick=()=>openBg(t.iid);h.append(back,title,bgb,blk);
  const body=el('div','','dmbody');body.id='dmmsgs';applyBg(body,t.bg);
  if(!t.msgs.length)body.append(el('p','Say hello to '+t.nick+'. They have to accept your first message before you can send more.','mut'));
- t.msgs.forEach(m=>{const d=el('div','','m'+(m.mine?' me':''));d.append(el('b',m.mine?'You':t.nick));
+ t.msgs.forEach(m=>{const d=el('div','','m'+(m.mine?' me':''));
   if(m.id){const more=el('a','\u22EF','more');more.tabIndex=0;more.setAttribute('role','button');more.setAttribute('aria-label','Message options');more.onclick=e=>{e.stopPropagation();openDmOptions(t,m)};more.onkeydown=e=>{if(e.key==='Enter')openDmOptions(t,m)};d.append(more);
    d.onclick=e=>{if(e.target.closest('a,button,img,audio,.quote,.rxrow,.imgbox,.audbox'))return;if(String(getSelection()))return;openDmOptions(t,m)}}
   if(m.reply){const q=el('div','','quote');q.append(el('b',m.reply.mine?'You':t.nick),document.createTextNode(' '+m.reply.text));d.append(q)}
