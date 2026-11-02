@@ -185,3 +185,15 @@ textarea{background:#26262c;border:1px solid var(--line);color:#eee;border-radiu
 .m.stk .mtime{display:none}
 .m:focus-visible{outline:2px solid var(--y)}
 .m.stk,.m.me.stk{padding:0}
+/* phones: picture / sticker / voice go behind a + button so the text box keeps its width */
+#attach{display:contents}.dmattach{display:contents}#more,#dmmore{display:none}
+@media(max-width:700px){
+ #form{flex-wrap:wrap;gap:8px;padding:8px 10px}
+ #form input#text{min-width:0;flex:1 1 0}
+ #more,#dmmore{display:inline-flex;align-items:center;justify-content:center}
+ #attach,.dmattach{display:none;order:-1;flex:0 0 100%;gap:8px}
+ #form.xopen #attach,.dmform.xopen .dmattach{display:flex}
+ #attach button,.dmattach button{flex:1}
+ .dmform{flex-wrap:wrap;gap:8px}
+ #form button.ghost,.dmform button.ghost{padding-left:12px;padding-right:12px}
+}

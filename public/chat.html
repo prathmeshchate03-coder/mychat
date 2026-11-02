@@ -20,7 +20,7 @@
 <div id="picprev" hidden></div>
 <div id="emojis" hidden></div>
 <div id="replybar" hidden></div>
-<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><button id="pic" class="ghost" aria-label="Send a picture">&#128247;</button><button id="stkb" class="ghost" aria-label="Stickers">&#127991;</button><button id="mic" class="ghost" aria-label="Record a voice note" hidden>&#127908;</button><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
+<div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><button id="more" class="ghost" aria-label="More: picture, sticker, voice note" aria-expanded="false">+</button><div id="attach"><button id="pic" class="ghost" aria-label="Send a picture">&#128247;</button><button id="stkb" class="ghost" aria-label="Stickers">&#127991;</button><button id="mic" class="ghost" aria-label="Record a voice note" hidden>&#127908;</button></div><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
 <div id="lightbox" hidden role="dialog" aria-label="Picture"><img alt=""></div>
 <input type="file" id="picfile" accept="image/*" hidden><input type="file" id="bgfile" accept="image/*" hidden>
 <div id="aboutm" class="modal" hidden role="dialog" aria-modal="true" aria-label="About this room"><div class="box"><div class="dmhead"><b>About this room</b><button type="button" id="aboutx" class="ghost sm">Close</button></div><div id="aboutbody"></div></div></div>
@@ -160,7 +160,7 @@ async function reactRoom(id,e){const r=await fetch('/react',{method:'POST',body:
 function onRx(x){rxc[x.id]=x.c;const d=msgEl(x.id);if(d)rxRender(d,x.c,myRx[x.id],e=>reactRoom(x.id,e))}
 function onDmRx(x){const t=threads.get(x.with);if(!t)return;const m=t.msgs.find(y=>y.id===x.id);if(m){m.rx=x.c;renderDms()}}
 function reactDm(t,m,e){m.pick=false;dmCall('/dm/react',{to:t.iid,id:m.id,e}).then(async r=>{if(r.ok){const j=await r.json().catch(()=>({}));m.myrx=j.mine}else dmNote('Could not react.');renderDms()}).catch(()=>{})}
-let replyTo=null,dmReply=null;
+let replyTo=null,dmReply=null,dmXOpen=false;
 // ---- stickers: 24 built-in ones (drawn here, nothing stored) and your own (made from a photo, accounts only) ----
 const STK=[['\u{1F602}','LOL','#ffd60a'],['\u{1F60D}','LOVE','#ff5a8a'],['\u{1F44D}','OK','#34c759'],['\u{1F62D}','SAD','#5ac8fa'],['\u{1F621}','GRR','#ff453a'],['\u{1F389}','YAY','#bf5af2'],
  ['\u{1F64F}','PLS','#ff9f0a'],['\u{1F525}','LIT','#ff6a00'],['\u{1F634}','ZZZ','#6e7bff'],['\u{1F914}','HMM','#8e8e93'],['\u{1F60E}','COOL','#30b0c7'],['\u{1F973}','PARTY','#ff2d9b'],
@@ -204,6 +204,7 @@ let stkCtx='room';
 const getMy=()=>{try{return JSON.parse(localStorage.getItem('mystk')||'[]')}catch{return[]}};
 const setMy=a=>{try{localStorage.setItem('mystk',JSON.stringify(a));return true}catch{notice('Could not save the sticker (browser storage is full).');return false}};
 function openStickers(ctx){stkCtx=ctx;renderStk('pack');$('stkm').hidden=false}
+$('more').onclick=()=>{const f=$('form'),o=f.classList.toggle('xopen');$('more').setAttribute('aria-expanded',String(o));$('more').textContent=o?'\u2715':'+'};
 $('stkx').onclick=()=>{$('stkm').hidden=true};$('stkb').onclick=()=>openStickers('room');
 function stkTabs(cur){const r=el('div','','stktabs');[['pack','Stickers'],['mine','My stickers']].forEach(([k,n])=>{const b=el('button',n,'ghost sm'+(cur===k?' on':''));b.type='button';b.onclick=()=>renderStk(k);r.append(b)});return r}
 function renderStk(view){const b=$('stkbody');b.innerHTML='';b.append(stkTabs(view));
@@ -604,7 +605,10 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
  if(waiting){inp.disabled=true;sb.disabled=true;at.disabled=true;mic.disabled=true}
  const sk=el('button','\uD83C\uDFF7','ghost');sk.id='dmstk';sk.setAttribute('aria-label','Stickers');sk.onclick=()=>openStickers(t.iid);
  if(waiting)sk.disabled=true;
- f.append(at,sk);if(feat.voice)f.append(mic);f.append(inp,sb);p.insertBefore(h,p.firstChild);p.insertBefore(body,pb||null);if(rb)p.append(rb);p.append(f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
+ const ax=el('div','','dmattach');ax.append(at,sk);if(feat.voice)ax.append(mic);
+ const mb=el('button',dmXOpen?'\u2715':'+','ghost');mb.id='dmmore';mb.type='button';mb.setAttribute('aria-label','More: picture, sticker, voice note');mb.onclick=()=>{dmXOpen=!dmXOpen;f.classList.toggle('xopen',dmXOpen);mb.textContent=dmXOpen?'\u2715':'+'};
+ if(dmXOpen)f.classList.add('xopen');
+ f.append(mb,ax,inp,sb);p.insertBefore(h,p.firstChild);p.insertBefore(body,pb||null);if(rb)p.append(rb);p.append(f);body.scrollTop=body.scrollHeight;if(focused&&!waiting)inp.focus()}
 function dmNote(text){const b=$('dmmsgs');if(b){b.append(el('p',text,'dmerr'));b.scrollTop=b.scrollHeight}else notice(text)}
 function sendDm(t,inp){if(pending&&pending.ctx===t.iid)return sendPicture();
  const text=inp.value.trim();if(!text)return;inp.value='';
