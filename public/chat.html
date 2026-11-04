@@ -395,13 +395,13 @@ $('bgfile').onchange=async()=>{const f=$('bgfile').files[0];if(!f)return;bgSay('
 // ---- room info, pinned message and owner tools ----
 let about={topic:'',desc:'',rules:''},pinned=null;
 const rpost=(p,b)=>fetch(p,{method:'POST',body:JSON.stringify({room,otok,...b})});
-function applyAbout(a){about=a||{topic:'',desc:'',rules:''}}
+function applyAbout(a){about=a||{topic:'',desc:'',rules:''};$('rname').textContent=about.topic||'#'+room}
 function applyPin(p){pinned=p||null;const b=$('pinbar');b.innerHTML='';if(!pinned){b.hidden=true;return}
  b.hidden=false;const t=el('span','','pintxt'),n=el('b','📌 '+pinned.nick+': ');t.append(n,document.createTextNode(pinned.text||(pinned.img?'[picture]':'')));b.append(t);
  if(me.role){const x=el('button','Unpin','ghost sm');x.onclick=()=>rpost('/pin',{id:null});b.append(x)}}
 function banUser(u){if(!confirm('Ban '+u.nick+' from this room? They cannot come back until you unban them.'))return;
  rpost('/room/ban',{cid:u.id}).then(r=>{notice(r.ok?u.nick+' was banned.':'Could not ban '+u.nick+'.')})}
-function openAbout(){closePanels();const b=$('aboutbody');b.innerHTML='';b.append(el('h3','#'+room));
+function openAbout(){closePanels();const b=$('aboutbody');b.innerHTML='';b.append(el('h3',about.topic||'#'+room));
  [['Topic',about.topic],['Description',about.desc],['Rules',about.rules]].forEach(([k,v])=>{b.append(el('div',k,'uh'),el('p',v||'Not set.','mut'))});
  b.append(el('p',users.length+' online now','mut'));
  const cp=el('button','Copy room link','ghost');cp.onclick=()=>{try{navigator.clipboard.writeText(location.origin+'/chat#'+room).then(()=>{cp.textContent='Link copied'},()=>{})}catch{}};b.append(cp);
@@ -663,7 +663,7 @@ $('q').oninput=loadRooms;
 async function loadRooms(){if(soc()){loadSubs();if(Date.now()-frAt>30000)loadFriends()}
  try{const l=await (await fetch('/rooms?q='+encodeURIComponent($('q').value))).json();$('list').innerHTML='';
  if(!l.length){$('list').textContent='No active rooms yet. Start one.';return}
- l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent='#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
+ l.forEach(r=>{const d=document.createElement('div');d.className='room';d.textContent=r.topic||'#'+r.name;const s=document.createElement('span');s.textContent=r.count;d.append(s);d.onclick=()=>join(r.name);$('list').append(d)})}catch{}}
 if(nick&&location.hash.length>1)$('gate').querySelector('p').textContent='Welcome back. Confirm to continue.';
 // A logged-in person has already confirmed they are 18 or older when signing up, so they go straight in.
 refreshMe().then(()=>{if(acct)start()});
