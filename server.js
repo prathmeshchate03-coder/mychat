@@ -409,7 +409,7 @@ async function handle(req, res) {
       reports: reports.map(({ reporters, ...r }) => r),
       bans: [...bans].map(([bip, b]) => ({ ip: bip, ...b })),
       closed: [...closed].map(([name, c]) => ({ name, ...c })),
-      live: [...rooms].filter(([, r]) => r.clients.size).map(([name, r]) => ({ name, count: r.clients.size }))
+      live: [...rooms].filter(([, r]) => r.clients.size).map(([name, r]) => ({ name, topic: r.about.topic || '', count: r.clients.size }))
         .sort((a, b) => b.count - a.count),
       storage: !DB_URL ? 'memory' : dbReady ? 'database' : 'connecting',
       dbError: dbError.slice(0, 200),   // reason text only, never the URL or token
