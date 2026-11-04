@@ -15,6 +15,7 @@ const reports = [];           // newest first, max 200
 const adminFails = new Map(); // ip -> { n, t }
 const BAD = [];   // add words to filter, e.g. ['word1', 'word2']
 const seo = require('./seo');   // topic pages, blog, sitemap.xml, robots.txt (text is in content.js)
+let BLOBS = new Set(); try { BLOBS = new Set(fs.readdirSync(path.join(PUB, 'blob')).filter(f => f.endsWith('.png')).map(f => f.slice(0, -4))); } catch {}
 const PAGES = { '/': 'index.html', '/chat': 'chat.html', '/legal': 'legal.html', '/admin': 'admin.html', '/style.css': 'style.css', '/logo.svg': 'logo.svg', '/og.png': 'og.png' };
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const okRoom = s => /^[a-z0-9-]{1,30}$/.test(s);
@@ -322,6 +323,8 @@ async function handle(req, res) {
   const ip = (req.headers['x-forwarded-for'] || '').split(',').pop().trim() || req.socket.remoteAddress;
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
+  const bm = req.method === 'GET' && /^\/blob\/([a-z_]{2,20})\.png$/.exec(url.pathname);
+  if (bm && BLOBS.has(bm[1])) { res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=31536000, immutable' }); return res.end(fs.readFileSync(path.join(PUB, 'blob', bm[1] + '.png'))); }
   const file = PAGES[url.pathname];
   if (file && req.method === 'GET') {
     const headers = { 'Content-Type': TYPES[path.extname(file)], 'Cache-Control': 'public, max-age=300' };

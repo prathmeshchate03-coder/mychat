@@ -197,3 +197,14 @@ textarea{background:#26262c;border:1px solid var(--line);color:#eee;border-radiu
  .dmform{flex-wrap:wrap;gap:8px}
  #form button.ghost,.dmform button.ghost{padding-left:12px;padding-right:12px}
 }
+/* blob emoji */
+#emojis{display:block;padding:0}
+.etabs{display:flex;gap:6px;padding:6px 8px 0}
+#emojis .etabs button{flex:1;padding:6px 0;font-size:18px;background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0}
+#emojis .etabs button.on{border-bottom-color:var(--y)}
+#egrid{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;padding:8px;max-height:200px;overflow-y:auto}
+#egrid.blgrid{grid-template-columns:repeat(6,1fr)}
+#egrid button{padding:4px 0;font-size:20px;line-height:1.3;background:transparent;border:0}#egrid button:hover{background:#34343c}
+#egrid.blgrid img{width:38px;height:38px;display:block;margin:0 auto}
+img.bl{width:1.6em;height:1.6em;vertical-align:-.4em;margin:0 1px}
+.bigbl img.bl{width:48px;height:48px;vertical-align:middle;margin:0 2px}

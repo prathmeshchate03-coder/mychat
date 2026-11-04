@@ -18,7 +18,7 @@
 <div id="msgs" aria-live="polite"></div>
 <div id="typing" aria-live="polite"></div>
 <div id="picprev" hidden></div>
-<div id="emojis" hidden></div>
+<div id="emojis" hidden><div class="etabs"><button id="et1" class="on" aria-label="Emoji">&#128512;</button><button id="et2" aria-label="Blob emoji"><img src="/blob/grin.png" alt="" width="22" height="22"></button></div><div id="egrid"></div></div>
 <div id="replybar" hidden></div>
 <div id="form"><button id="emo" class="ghost" aria-label="Emoji" aria-expanded="false">&#128578;</button><button id="more" class="ghost" aria-label="More: picture, sticker, voice note" aria-expanded="false">+</button><div id="attach"><button id="pic" class="ghost" aria-label="Send a picture">&#128247;</button><button id="stkb" class="ghost" aria-label="Stickers">&#127991;</button><button id="mic" class="ghost" aria-label="Record a voice note" hidden>&#127908;</button></div><input type="text" id="text" maxlength="500" placeholder="Type a message" autocomplete="off" aria-label="Message"><button id="send">Send</button></div></div></div>
 <div id="lightbox" hidden role="dialog" aria-label="Picture"><img alt=""></div>
@@ -272,7 +272,7 @@ function add(m){const box=$('msgs');
  if(m.stk){d.classList.add('stk');d.append(stkBox(m))}
  else if(isImgId(m.img))d.append(imgBox(m.img,mine,m.nick));else if(m.imgGone)d.append(el('div','Picture deleted','imggone'));
  if(isImgId(m.aud))d.append(audBox(m.aud,mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
- if(m.text){const t=el('div',m.text);if(m.t){const tm=el('span',new Date(m.t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),'mtime');t.append(tm)}d.append(t)}
+ if(m.text){const t=richDiv(m.text);if(m.t){const tm=el('span',new Date(m.t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}),'mtime');t.append(tm)}d.append(t)}
  if(m.rx){rxc[m.id]=m.rx;rxRender(d,m.rx,myRx[m.id],e=>reactRoom(m.id,e))}
  // layout: others get a round letter badge and their name above the bubble, only on the first message of a run; mine sit on the right without either
  const key=m.uid||m.nick,cont=!!(lastRun&&lastRun.key===key&&Math.abs((m.t||0)-lastRun.t)<120000);lastRun={key,t:m.t||Date.now()};
@@ -588,7 +588,7 @@ function renderDms(){const p=$('dms');if(p.hidden)return;
   if(m.stk){d.classList.add('stk');d.append(stkBox(m))}
   else if(isImgId(m.img))d.append(imgBox(m.img,m.mine,t.nick));else if(m.gone)d.append(el('div','Picture deleted','imggone'));
   if(isImgId(m.aud))d.append(audBox(m.aud,m.mine,m.dur));else if(m.audGone)d.append(el('div','Voice note deleted','imggone'));
-  if(m.text)d.append(el('div',m.text));
+  if(m.text)d.append(richDiv(m.text));
   if(m.rx)rxRender(d,m.rx,m.myrx,e=>reactDm(t,m,e));
   body.append(d)});
  const waiting=t.msgs.length>0&&t.msgs.every(m=>m.mine);
@@ -632,12 +632,19 @@ $('text').oninput=()=>{const now=Date.now();
  if($('text').value&&now-lastTyping>2500){lastTyping=now;fetch('/typing',{method:'POST',body:JSON.stringify({room,nick,uid})}).catch(()=>{})}};
 
 // ---- emoji ----
-'😀 😂 🤣 😊 😍 😘 😎 🤔 😅 😭 😡 😴 🙄 😉 🥳 😇 👍 👎 👏 🙏 💪 🔥 ❤️ 💔 ✨ 🎉 🎵 🎮 🍕 ☕ 🌙 ⭐'.split(' ').forEach(e=>{
- const b=el('button',e,'ghost');b.setAttribute('aria-label','Insert '+e);
- b.onclick=()=>{const t=$('text'),s=t.selectionStart??t.value.length,x=t.selectionEnd??s;
-  if(t.value.length-(x-s)+e.length>t.maxLength)return;
-  t.value=t.value.slice(0,s)+e+t.value.slice(x);t.focus();t.selectionStart=t.selectionEnd=s+e.length};
- $('emojis').append(b)});
+const EMO='😀 😂 🤣 😊 😍 😘 😎 🤔 😅 😭 😡 😴 🙄 😉 🥳 😇 👍 👎 👏 🙏 💪 🔥 ❤️ 💔 ✨ 🎉 🎵 🎮 🍕 ☕ 🌙 ⭐'.split(' ');
+// blob emoji (Noto blob set, Apache 2.0): typed as :b_name: and drawn as a small picture
+const BL=new Set('grin beam joy smile happy sweat_smile laugh angel devil wink blush yum relieved love cool smirk neutral flat unamused sweat pensive confused confounded kiss kiss_heart kiss_closed kiss_blush tongue wink_tongue squint_tongue sad angry rage cry persevere triumph sad_sweat frown anguish fear weary yawn tired grimace sob surprised wobbly cold_sweat scream flushed shy sleeping dizzy blank mask cat_grin cat_joy cat_smile cat_love cat_smirk cat_kiss cat_angry cat_cry cat_weary no ok bow monkey_see monkey_hear monkey_speak hand_up celebrate meh kiss_small pray'.split(' '));let blobTab=false;
+function rich(text){const f=document.createDocumentFragment();String(text).split(/(:b_[a-z_]+:)/).forEach(p=>{const n=/^:b_([a-z_]+):$/.exec(p);if(n&&BL.has(n[1])){const i=document.createElement('img');i.src='/blob/'+n[1]+'.png';i.alt=p;i.className='bl';i.loading='lazy';f.append(i)}else if(p)f.append(document.createTextNode(p))});return f}
+function richDiv(text){const d=el('div');d.append(rich(text));const only=String(text).replace(/:b_[a-z_]+:/g,m=>BL.has(m.slice(3,-1))?'':m).trim()==='';if(only&&(String(text).match(/:b_/g)||[]).length<=5)d.classList.add('bigbl');return d}
+function insertText(e){const t=$('text'),s=t.selectionStart??t.value.length,x=t.selectionEnd??s;
+ if(t.value.length-(x-s)+e.length>t.maxLength)return;
+ t.value=t.value.slice(0,s)+e+t.value.slice(x);t.focus();t.selectionStart=t.selectionEnd=s+e.length}
+function showEmojiTab(blob){blobTab=blob;$('et1').className=blob?'':'on';$('et2').className=blob?'on':'';$('egrid').className=blob?'blgrid':'';
+ const g=$('egrid');g.textContent='';
+ if(blob)[...BL].forEach(n=>{const b=el('button','','ghost');b.setAttribute('aria-label','Blob '+n.replace(/_/g,' '));const i=document.createElement('img');i.src='/blob/'+n+'.png';i.alt='';i.loading='lazy';b.append(i);b.onclick=()=>insertText(':b_'+n+':');g.append(b)});
+ else EMO.forEach(e=>{const b=el('button',e,'ghost');b.setAttribute('aria-label','Insert '+e);b.onclick=()=>insertText(e);g.append(b)})}
+$('et1').onclick=()=>showEmojiTab(false);$('et2').onclick=()=>showEmojiTab(true);showEmojiTab(false);
 $('emo').onclick=()=>{const open=$('emojis').hidden;closePanels();$('emojis').hidden=!open;$('emo').setAttribute('aria-expanded',String(open))};
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('optm').hidden)closeOpt();else if(!$('stkm').hidden)$('stkm').hidden=true;else if(!$('lightbox').hidden)$('lightbox').click();else if(!$('auth').hidden)closeAuth();else closePanels()}});
 
